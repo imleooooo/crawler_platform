@@ -1,0 +1,174 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+    background-color: #FAF9F6;
+    color: #000000;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar styling (Hidden or minimal for iOS feel) */
+.custom-scroll::-webkit-scrollbar {
+    width: 0px;
+    background: transparent;
+}
+
+/* iOS Card Shadow */
+.ios-shadow {
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+/* iOS Focus Ring */
+.ios-focus-ring:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.3);
+}
+
+/* --- iOS Material (Frosted Glass) --- */
+.ios-glass {
+    background-color: rgba(255, 255, 255, 0.75);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border-bottom: 0.5px solid rgba(0, 0, 0, 0.1);
+}
+
+.ios-card {
+    background-color: #FFFFFF;
+    border-radius: 16px;
+    border: 1px solid #EDE9E3;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+/* iOS Input Style */
+.ios-input {
+    background-color: #E5E5EA;
+    /* System Gray 6 */
+    border: none;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 17px;
+    /* iOS Body size */
+    transition: background-color 0.2s;
+}
+
+.ios-input:focus {
+    background-color: #D1D1D6;
+    /* System Gray 5 */
+    outline: none;
+}
+
+/* iOS Button Style */
+.ios-btn-primary {
+    background-color: #007AFF;
+    color: white;
+    font-weight: 600;
+    border-radius: 12px;
+    transition: opacity 0.2s;
+}
+
+.ios-btn-primary:active {
+    opacity: 0.7;
+}
+
+/* iOS Switch Toggle */
+.ios-toggle {
+    appearance: none;
+    width: 51px;
+    height: 31px;
+    background-color: #E9E9EA;
+    border-radius: 9999px;
+    position: relative;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.ios-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 27px;
+    height: 27px;
+    background-color: white;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: transform 0.3s;
+}
+
+.ios-toggle:checked {
+    background-color: #34C759;
+}
+
+.ios-toggle:checked::after {
+    transform: translateX(20px);
+}
+
+/* iOS Modal Sheet Animations */
+@keyframes scaleIn {
+    from {
+        transform: scale(0.95);
+        opacity: 0;
+    }
+    to {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+.ios-modal-sheet {
+    animation: scaleIn 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.ios-modal-backdrop {
+    animation: fadeIn 0.2s ease-out;
+}
+
+/* Strategy Card Styles */
+.strategy-card {
+    transition: all 0.2s ease;
+}
+
+.strategy-card:hover {
+    background-color: #F9FAFB;
+}
+
+.strategy-card:active {
+    background-color: #F3F4F6;
+    transform: scale(0.99);
+}
+
+.strategy-card.selected {
+    background-color: #EFF6FF;
+    border-color: #3B82F6;
+}
+
+/* Reduced Motion Support */
+@media (prefers-reduced-motion: reduce) {
+    .ios-modal-sheet,
+    .ios-modal-backdrop {
+        animation: none;
+    }
+
+    .animate-pulse {
+        animation: none;
+    }
+
+    .transition-all,
+    .transition-colors,
+    .transition-transform {
+        transition: none;
+    }
+}

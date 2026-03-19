@@ -1,0 +1,33 @@
+[package]
+name = "lab-crawl"
+version = "0.1.6"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "lab_crawl"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tokio = { version = "1.36", features = ["full"] }
+chromiumoxide = { version = "0.8", features = ["tokio-runtime"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = "2.5"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# scraper is good for CSS selectors
+scraper = "0.25"
+# html2text for markdown conversion
+html2text = "0.12"
+regex = "1.10"
+futures = "0.3"
+base64 = "0.22"
+uuid = { version = "1.8", features = ["v4"] }
+rand = "0.8"
+pyo3 = { version = "0.27", features = ["extension-module"] }
+readability = { path = "readability" }
+home = "=0.5.9"

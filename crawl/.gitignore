@@ -1,0 +1,7 @@
+target/
+.venv/
+__pycache__/
+*.so
+*.pyc
+*.swp
+.DS_Store
