@@ -1,23 +1,28 @@
+use std::sync::OnceLock;
 use tracing_subscriber;
 
 pub fn init_logging() {
     tracing_subscriber::fmt::init();
 }
 
+static REF_LINE_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+static MARKER_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+static WHITESPACE_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+
 pub fn clean_markdown_links(markdown: &str) -> String {
     // 1. Remove reference lines at the bottom.
-    // This regex matches `[n]: ...` and any subsequent lines that do NOT start with `[` (which would be the next reference).
-    // This handles cases where html2text wraps long URLs across multiple lines.
-    let ref_line_regex = regex::Regex::new(r"(?m)^\[\d+\]:.*(?:\n[^\[\r\n].*)*").unwrap();
+    let ref_line_regex =
+        REF_LINE_REGEX.get_or_init(|| regex::Regex::new(r"(?m)^\[\d+\]:.*(?:\n[^\[\r\n].*)*").expect("valid regex"));
     let cleaned_text = ref_line_regex.replace_all(markdown, "");
 
     // 2. Remove [n] markers from text, e.g. "some text [1]" -> "some text"
-    // Regex: \[ \d+ \]
-    let marker_regex = regex::Regex::new(r"\[\d+\]").unwrap();
+    let marker_regex =
+        MARKER_REGEX.get_or_init(|| regex::Regex::new(r"\[\d+\]").expect("valid regex"));
     let cleaned_text = marker_regex.replace_all(&cleaned_text, "");
 
     // 3. Remove excess newlines that might be left behind
-    let whitespace_regex = regex::Regex::new(r"\n{3,}").unwrap();
+    let whitespace_regex =
+        WHITESPACE_REGEX.get_or_init(|| regex::Regex::new(r"\n{3,}").expect("valid regex"));
     let final_text = whitespace_regex.replace_all(&cleaned_text, "\n\n");
 
     final_text.trim().to_string()

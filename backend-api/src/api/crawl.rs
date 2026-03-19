@@ -1,13 +1,15 @@
 use axum::{extract::State, Json};
 use chrono::Utc;
-use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
 
 use crate::services::{crawler, s3, sanitize_bucket_name};
 use crate::state::AppState;
+
+static URL_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
 #[derive(Deserialize)]
 pub struct AgentCrawlRequest {
@@ -48,16 +50,17 @@ pub async fn agent_crawl(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // Metrics
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.queue_size += 1;
-        metrics.active_workers += 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            metrics.queue_size += 1;
+            metrics.active_workers += 1;
+        }
     }
 
     // Extract URL from prompt if present, to override default/hardcoded URL
     let mut target_url = request.url.clone();
 
     // Frontend sends "https://google.com" by default. If we find a specific URL in prompt, use it.
-    let url_regex = Regex::new(r"https?://[^\s,]+").unwrap();
+    let url_regex = URL_REGEX.get_or_init(|| regex::Regex::new(r"https?://[^\s,]+").expect("valid regex"));
     if let Some(mat) = url_regex.find(&request.prompt) {
         target_url = mat.as_str().to_string();
         tracing::info!("Extracted URL from prompt: {}", target_url);
@@ -82,12 +85,13 @@ pub async fn agent_crawl(
 
     // Metrics cleanup
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        if metrics.queue_size > 0 {
-            metrics.queue_size -= 1;
-        }
-        if metrics.active_workers > 0 {
-            metrics.active_workers -= 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            if metrics.queue_size > 0 {
+                metrics.queue_size -= 1;
+            }
+            if metrics.active_workers > 0 {
+                metrics.active_workers -= 1;
+            }
         }
     }
 
@@ -104,7 +108,7 @@ pub async fn agent_crawl(
     // Save
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     let bucket_name = if let Some(job_id) = &request.job_id {
         sanitize_bucket_name(job_id)
@@ -123,7 +127,13 @@ pub async fn agent_crawl(
     let mut processed_results = Vec::new();
 
     for (i, item) in results.iter().enumerate() {
-        let mut item_val = serde_json::to_value(item).unwrap();
+        let mut item_val = match serde_json::to_value(item) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to serialize agent crawl result for {}: {}", item.url, e);
+                continue;
+            }
+        };
         if let Some(obj) = item_val.as_object_mut() {
             obj.insert("s3_bucket".to_string(), json!(bucket_name));
 
@@ -159,15 +169,18 @@ pub async fn agent_crawl(
         "prompt": prompt_for_json,
         "results": processed_results
     }))
-    .unwrap();
+    .unwrap_or_default();
 
-    let _ = s3::save_to_rustfs_content(
+    if let Err(e) = s3::save_to_rustfs_content(
         &state.s3_client,
         &bucket_name,
         "search_results.json",
         &result_json_content,
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to save agent results to S3 bucket {}: {}", bucket_name, e);
+    }
 
     Ok(Json(json!({"data": processed_results})))
 }
@@ -179,7 +192,7 @@ pub async fn batch_crawl(
     // Generate bucket name upfront for tracking and deletion
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     let bucket_name = if let Some(job_id) = &request.job_id {
         sanitize_bucket_name(job_id)
@@ -210,21 +223,23 @@ pub async fn batch_crawl(
     if let Some(true) = request.sync {
         // Metrics update
         {
-            let mut metrics = state.metrics.lock().unwrap();
-            metrics.queue_size += 1; // Temporarily count as queued/active
-            metrics.active_workers += 1;
+            if let Ok(mut metrics) = state.metrics.lock() {
+                metrics.queue_size += 1;
+                metrics.active_workers += 1;
+            }
         }
 
         let crawl_res = crawler::call_crawler_service(&crawl_req).await;
 
         // Metrics cleanup
         {
-            let mut metrics = state.metrics.lock().unwrap();
-            if metrics.queue_size > 0 {
-                metrics.queue_size -= 1;
-            }
-            if metrics.active_workers > 0 {
-                metrics.active_workers -= 1;
+            if let Ok(mut metrics) = state.metrics.lock() {
+                if metrics.queue_size > 0 {
+                    metrics.queue_size -= 1;
+                }
+                if metrics.active_workers > 0 {
+                    metrics.active_workers -= 1;
+                }
             }
         }
 
@@ -241,7 +256,13 @@ pub async fn batch_crawl(
         // Save Results to S3
         let mut processed_results = Vec::new();
         for (i, item) in results.iter().enumerate() {
-            let mut item_val = serde_json::to_value(item).unwrap();
+            let mut item_val = match serde_json::to_value(item) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to serialize batch crawl result for {}: {}", item.url, e);
+                    continue;
+                }
+            };
             if let Some(obj) = item_val.as_object_mut() {
                 obj.insert("s3_bucket".to_string(), json!(bucket_name));
 
@@ -274,15 +295,18 @@ pub async fn batch_crawl(
             "urls": request.urls,
             "results": processed_results
         }))
-        .unwrap();
+        .unwrap_or_default();
 
-        let _ = s3::save_to_rustfs_content(
+        if let Err(e) = s3::save_to_rustfs_content(
             &state.s3_client,
             &bucket_name,
             "search_results.json",
             &result_json_content,
         )
-        .await;
+        .await
+        {
+            tracing::warn!("Failed to save batch results to S3 bucket {}: {}", bucket_name, e);
+        }
 
         return Ok(Json(json!({
             "success": true,

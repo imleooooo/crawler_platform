@@ -9,6 +9,8 @@ pub struct AppState {
     pub s3_client_public: S3Client,
     pub metrics: Arc<Mutex<MetricsState>>,
     pub queue_service: QueueService,
+    pub google_api_key: String,
+    pub google_cx: String,
 }
 
 pub struct MetricsState {

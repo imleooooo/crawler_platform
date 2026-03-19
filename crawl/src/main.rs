@@ -9,19 +9,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let crawler = AsyncWebCrawler::new(config).await?;
 
     let url = "https://example.com";
-    println!("Crawling {}...", url);
+    tracing::info!("Crawling {}...", url);
     let result = crawler.arun(url, None).await?;
 
-    println!("HTML Length: {}", result.html.len());
+    tracing::info!("HTML Length: {}", result.html.len());
     if let Some(md) = result.markdown {
-        println!(
+        tracing::info!(
             "Markdown Content:\n----------------\n{}\n----------------",
             md
         );
     }
 
     if let Some(screenshot) = result.screenshot {
-        println!("Screenshot captured ({} bytes)", screenshot.len());
+        tracing::info!("Screenshot captured ({} bytes)", screenshot.len());
     }
 
     crawler.close().await;

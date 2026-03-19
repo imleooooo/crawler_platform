@@ -3,7 +3,6 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::env;
 use std::time::SystemTime;
 use uuid::Uuid;
 
@@ -47,8 +46,9 @@ pub async fn search_aggregate(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // 1. Metrics update
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.queue_size += 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            metrics.queue_size += 1;
+        }
     }
 
     let start_time = SystemTime::now();
@@ -56,16 +56,17 @@ pub async fn search_aggregate(
 
     // Metric update cleanup
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        if metrics.queue_size > 0 {
-            metrics.queue_size -= 1;
-        }
+        if let Ok(mut metrics) = state.metrics.lock() {
+            if metrics.queue_size > 0 {
+                metrics.queue_size -= 1;
+            }
 
-        // Update history
-        if let Ok(elapsed) = start_time.elapsed() {
-            metrics.request_history.push_back(elapsed.as_secs_f64());
-            if metrics.request_history.len() > 50 {
-                metrics.request_history.pop_front();
+            // Update history
+            if let Ok(elapsed) = start_time.elapsed() {
+                metrics.request_history.push_back(elapsed.as_secs_f64());
+                if metrics.request_history.len() > 50 {
+                    metrics.request_history.pop_front();
+                }
             }
         }
     }
@@ -78,18 +79,8 @@ async fn search_logic(
     request: SearchRequest,
     _start_time: SystemTime,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    let google_api_key = env::var("GOOGLE_API_KEY").map_err(|_| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "GOOGLE_API_KEY not set".to_string(),
-        )
-    })?;
-    let google_cx = env::var("GOOGLE_CX").map_err(|_| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "GOOGLE_CX not set".to_string(),
-        )
-    })?;
+    let google_api_key = state.google_api_key.clone();
+    let google_cx = state.google_cx.clone();
 
     // 2. Google Custom Search
     let mut all_urls = Vec::new();
@@ -215,8 +206,9 @@ async fn search_logic(
 
     // Update active workers
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.active_workers += unique_urls.len();
+        if let Ok(mut metrics) = state.metrics.lock() {
+            metrics.active_workers += unique_urls.len();
+        }
     }
 
     // 3. Call Crawler Service
@@ -234,12 +226,12 @@ async fn search_logic(
 
     // Decrement workers
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        // Prevent underflow
-        if metrics.active_workers >= unique_urls.len() {
-            metrics.active_workers -= unique_urls.len();
-        } else {
-            metrics.active_workers = 0;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            if metrics.active_workers >= unique_urls.len() {
+                metrics.active_workers -= unique_urls.len();
+            } else {
+                metrics.active_workers = 0;
+            }
         }
     }
 
@@ -256,7 +248,7 @@ async fn search_logic(
     // 4. Save to RustFS
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     let bucket_name = if let Some(job_id) = &request.job_id {
         sanitize_bucket_name(job_id)
@@ -289,7 +281,13 @@ async fn search_logic(
     // We can assume first call creates it.
 
     for (i, item) in aggregated_results.iter_mut().enumerate() {
-        let mut item_value = serde_json::to_value(&*item).unwrap();
+        let mut item_value = match serde_json::to_value(&*item) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to serialize crawl result for {}: {}", item.url, e);
+                continue;
+            }
+        };
 
         // Inject info
         if let Some(obj) = item_value.as_object_mut() {
@@ -327,23 +325,30 @@ async fn search_logic(
         "keywords": request.keywords,
         "results": final_results
     }))
-    .unwrap();
+    .unwrap_or_default();
 
-    let _ = s3::save_to_rustfs_content(
+    if let Err(e) = s3::save_to_rustfs_content(
         &state.s3_client,
         &bucket_name,
         "search_results.json",
         &result_json_content,
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to save search results to S3 bucket {}: {}", bucket_name, e);
+    }
 
     // Optional: Save to local output_dir
     if let Some(dir) = request.output_dir {
-        // tokio fs create dir
-        let _ = tokio::fs::create_dir_all(&dir).await;
-        let filename = format!("search_results_{}.json", timestamp);
-        let filepath = std::path::Path::new(&dir).join(filename);
-        let _ = tokio::fs::write(filepath, &result_json_content).await;
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            tracing::warn!("Failed to create output directory {}: {}", dir, e);
+        } else {
+            let filename = format!("search_results_{}.json", timestamp);
+            let filepath = std::path::Path::new(&dir).join(filename);
+            if let Err(e) = tokio::fs::write(filepath, &result_json_content).await {
+                tracing::warn!("Failed to write local results to {}: {}", dir, e);
+            }
+        }
     }
 
     Ok(Json(json!({"data": final_results})))

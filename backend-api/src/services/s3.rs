@@ -88,13 +88,11 @@ pub async fn save_to_rustfs_file(
 }
 
 async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) {
-    let _ = client.create_bucket().bucket(bucket_name).send().await;
-    // We ignore errors here as it might already exist.
-    // In a real app we'd check specifically for "BucketAlreadyExists" or "BucketAlreadyOwnedByYou".
+    if let Err(e) = client.create_bucket().bucket(bucket_name).send().await {
+        let err_str = e.to_string();
+        if !err_str.contains("BucketAlreadyExists") && !err_str.contains("BucketAlreadyOwnedByYou") {
+            tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
+        }
+    }
 }
 
-// TODO: Presigned URL generator if needed.
-// Rust AWS SDK for presigning is a bit detailed, often requiring `aws-sdk-s3::presigning`.
-// For now we'll skip unless explicitly required by frontend. Python code had it but it wasn't clearly used in the main flow shown?
-// Actually `generate_presigned_url` was in Python `main.py` but seemingly unused in the endpoints I read?
-// Wait, `read_url_content` only showed first 800 lines. Let's assume we don't need it urgently unless I see it called.

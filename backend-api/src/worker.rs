@@ -36,7 +36,7 @@ pub async fn run_worker(state: AppState) {
                         // Save Results logic
                         let timestamp = SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs();
 
                         let bucket_name = if let Some(name) = &task.bucket_name {
@@ -57,7 +57,13 @@ pub async fn run_worker(state: AppState) {
                         let mut processed_results = Vec::new();
 
                         for (i, item) in resp.results.iter().enumerate() {
-                            let mut item_val = serde_json::to_value(item).unwrap();
+                            let mut item_val = match serde_json::to_value(item) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::error!("Failed to serialize worker crawl result for {}: {}", item.url, e);
+                                    continue;
+                                }
+                            };
                             if let Some(obj) = item_val.as_object_mut() {
                                 obj.insert("s3_bucket".to_string(), json!(bucket_name));
 
@@ -90,21 +96,30 @@ pub async fn run_worker(state: AppState) {
                         }))
                         .unwrap_or_default();
 
-                        let _ = s3::save_to_rustfs_content(
+                        if let Err(e) = s3::save_to_rustfs_content(
                             &state.s3_client,
                             &bucket_name,
                             "summary.json",
                             &json_content,
                         )
-                        .await;
+                        .await
+                        {
+                            tracing::warn!("Failed to save worker summary to S3 bucket {}: {}", bucket_name, e);
+                        }
 
                         // Local Output (if requested)
                         if let Some(dir) = &task.output_dir {
-                            let _ = tokio::fs::create_dir_all(dir).await;
-                            let filename = format!("batch_crawl_results_{}.json", timestamp);
-                            let filepath = std::path::Path::new(dir).join(filename);
-                            let _ = tokio::fs::write(&filepath, &json_content).await;
-                            tracing::info!("Saved local copy to {}", filepath.display());
+                            if let Err(e) = tokio::fs::create_dir_all(dir).await {
+                                tracing::warn!("Failed to create output directory {}: {}", dir, e);
+                            } else {
+                                let filename = format!("batch_crawl_results_{}.json", timestamp);
+                                let filepath = std::path::Path::new(dir).join(filename);
+                                if let Err(e) = tokio::fs::write(&filepath, &json_content).await {
+                                    tracing::warn!("Failed to write worker results to {:?}: {}", filepath, e);
+                                } else {
+                                    tracing::info!("Saved local copy to {}", filepath.display());
+                                }
+                            }
                         }
 
                         tracing::info!("Task completed and saved.");

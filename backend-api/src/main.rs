@@ -1,20 +1,23 @@
 #![allow(clippy::collapsible_if)]
 use aws_config::BehaviorVersion;
 use axum::{
+    http::HeaderValue,
     routing::{get, post},
     Router,
 };
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 mod api;
+mod config;
 mod services;
 mod state;
 mod worker;
 
+use crate::config::AppConfig;
 use crate::services::queue::QueueService;
 use deadpool_redis::{Config, Runtime};
 use state::{AppState, MetricsState};
@@ -24,17 +27,21 @@ async fn main() {
     dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    // Initialize S3 Client
-    let rustfs_endpoint =
-        std::env::var("RUSTFS_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
-    let access_key =
-        std::env::var("RUSTFS_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-    let secret_key =
-        std::env::var("RUSTFS_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+    // Validate all required environment variables at startup — fail fast if any are missing.
+    let cfg = AppConfig::from_env().unwrap_or_else(|e| {
+        eprintln!("FATAL: {}", e);
+        std::process::exit(1);
+    });
 
+    // Initialize S3 Client
     let region = aws_config::Region::new("us-east-1");
-    let credentials =
-        aws_sdk_s3::config::Credentials::new(access_key, secret_key, None, None, "env");
+    let credentials = aws_sdk_s3::config::Credentials::new(
+        &cfg.rustfs_access_key,
+        &cfg.rustfs_secret_key,
+        None,
+        None,
+        "env",
+    );
 
     // Load default SDK config (includes HTTP connector)
     let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
@@ -42,7 +49,7 @@ async fn main() {
     // Build S3-specific config overriding endpoint and credentials
     let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
         .region(region.clone())
-        .endpoint_url(rustfs_endpoint)
+        .endpoint_url(&cfg.rustfs_endpoint)
         .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(
             credentials.clone(),
         ))
@@ -51,12 +58,9 @@ async fn main() {
 
     let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
-    let rustfs_public_endpoint = std::env::var("RUSTFS_PUBLIC_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".to_string());
-
     let s3_public_config = aws_sdk_s3::config::Builder::from(&sdk_config)
         .region(region.clone())
-        .endpoint_url(rustfs_public_endpoint)
+        .endpoint_url(&cfg.rustfs_public_endpoint)
         .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(
             credentials.clone(),
         ))
@@ -66,12 +70,13 @@ async fn main() {
     let s3_client_public = aws_sdk_s3::Client::from_conf(s3_public_config);
 
     // Initialize Redis Pool
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let cfg = Config::from_url(redis_url);
-    let redis_pool = cfg
+    let redis_cfg = Config::from_url(&cfg.redis_url);
+    let redis_pool = redis_cfg
         .create_pool(Some(Runtime::Tokio1))
-        .expect("Failed to create Redis pool");
+        .unwrap_or_else(|e| {
+            eprintln!("FATAL: Failed to create Redis pool: {}", e);
+            std::process::exit(1);
+        });
     let queue_service = QueueService::new(redis_pool);
 
     let state = AppState {
@@ -79,6 +84,8 @@ async fn main() {
         s3_client_public,
         metrics: Arc::new(Mutex::new(MetricsState::new())),
         queue_service,
+        google_api_key: cfg.google_api_key,
+        google_cx: cfg.google_cx,
     };
 
     // Spawn Worker
@@ -86,10 +93,25 @@ async fn main() {
     tokio::spawn(async move {
         worker::run_worker(worker_state).await;
     });
+
+    // CORS: restrict to explicitly configured origins only
+    let allowed_origins: Vec<HeaderValue> = cfg
+        .allowed_origins
+        .iter()
+        .filter_map(|o| o.parse::<HeaderValue>().ok())
+        .collect();
+
     let cors = CorsLayer::new()
-        .allow_origin(Any) // For dev only. In prod specific origins.
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ]);
 
     let app = Router::new()
         .route("/", get(api::general::root))
@@ -111,6 +133,12 @@ async fn main() {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
     tracing::info!("listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
+        eprintln!("FATAL: Failed to bind {}: {}", addr, e);
+        std::process::exit(1);
+    });
+    axum::serve(listener, app).await.unwrap_or_else(|e| {
+        eprintln!("FATAL: Server error: {}", e);
+        std::process::exit(1);
+    });
 }

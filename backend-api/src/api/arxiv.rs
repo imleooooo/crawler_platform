@@ -41,9 +41,10 @@ pub async fn arxiv_search(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // Metrics
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.queue_size += 1;
-        metrics.active_workers += 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            metrics.queue_size += 1;
+            metrics.active_workers += 1;
+        }
     }
 
     // Logic
@@ -103,7 +104,7 @@ pub async fn arxiv_search(
 
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     let bucket_name = if let Some(job_id) = &request.job_id {
         sanitize_bucket_name(job_id)
@@ -144,7 +145,9 @@ pub async fn arxiv_search(
             .to_string()
     };
 
-    let _ = tokio::fs::create_dir_all(&output_path_str).await;
+    if let Err(e) = tokio::fs::create_dir_all(&output_path_str).await {
+        tracing::warn!("Failed to create arxiv output directory {}: {}", output_path_str, e);
+    }
 
     for entry in feed.entries {
         let title = entry.title.map(|t| t.content).unwrap_or_default();
@@ -223,12 +226,13 @@ pub async fn arxiv_search(
 
     // Metrics cleanup
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        if metrics.queue_size > 0 {
-            metrics.queue_size -= 1;
-        }
-        if metrics.active_workers > 0 {
-            metrics.active_workers -= 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            if metrics.queue_size > 0 {
+                metrics.queue_size -= 1;
+            }
+            if metrics.active_workers > 0 {
+                metrics.active_workers -= 1;
+            }
         }
     }
 
@@ -246,15 +250,18 @@ pub async fn arxiv_search(
         "keywords": request.keywords,
         "results": results
     }))
-    .unwrap();
+    .unwrap_or_default();
 
-    let _ = s3::save_to_rustfs_content(
+    if let Err(e) = s3::save_to_rustfs_content(
         &state.s3_client,
         &bucket_name,
         "search_results.json",
         &result_json_content,
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to save arxiv results to S3 bucket {}: {}", bucket_name, e);
+    }
 
     Ok(Json(json!({"data": results})))
 }

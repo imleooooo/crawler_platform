@@ -1,16 +1,18 @@
 use axum::{extract::State, Json};
 use chrono::Utc;
-use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use url::Url;
 use uuid::Uuid;
 
 use crate::services::{crawler, s3, sanitize_bucket_name};
 use crate::state::AppState;
+
+static LINK_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
 #[derive(Deserialize)]
 pub struct ExplorationRequest {
@@ -31,9 +33,10 @@ pub async fn ai_exploration(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // Metrics
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.queue_size += 1;
-        metrics.active_workers += 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            metrics.queue_size += 1;
+            metrics.active_workers += 1;
+        }
     }
 
     let mut current_url = request.url.clone();
@@ -41,7 +44,7 @@ pub async fn ai_exploration(
 
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     let bucket_name = if let Some(job_id) = &request.job_id {
         sanitize_bucket_name(job_id)
@@ -60,7 +63,7 @@ pub async fn ai_exploration(
     let mut results = Vec::new();
 
     // Regex for markdown links [text](url)
-    let link_regex = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
+    let link_regex = LINK_REGEX.get_or_init(|| regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex"));
 
     for page_num in 0..limit {
         tracing::info!(
@@ -87,7 +90,7 @@ pub async fn ai_exploration(
             break;
         }
 
-        let crawl_data = crawl_res.unwrap();
+        let crawl_data = crawl_res.expect("crawl_res was already checked above");
         if crawl_data.results.is_empty() || !crawl_data.results[0].success {
             break;
         }
@@ -158,13 +161,18 @@ pub async fn ai_exploration(
 
                         // Optional: save local
                         if let Some(dir) = &request.output_dir {
-                            let _ = tokio::fs::create_dir_all(dir).await;
-                            let filepath = Path::new(dir).join(format!(
-                                "page{}_article{}.md",
-                                page_num + 1,
-                                i + 1
-                            ));
-                            let _ = tokio::fs::write(filepath, &content_with_header).await;
+                            if let Err(e) = tokio::fs::create_dir_all(dir).await {
+                                tracing::warn!("Failed to create output directory {}: {}", dir, e);
+                            } else {
+                                let filepath = Path::new(dir).join(format!(
+                                    "page{}_article{}.md",
+                                    page_num + 1,
+                                    i + 1
+                                ));
+                                if let Err(e) = tokio::fs::write(&filepath, &content_with_header).await {
+                                    tracing::warn!("Failed to write article to {:?}: {}", filepath, e);
+                                }
+                            }
                         }
 
                         results.push(json!({
@@ -189,9 +197,14 @@ pub async fn ai_exploration(
 
     // Metrics cleanup
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.queue_size -= 1;
-        metrics.active_workers -= 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            if metrics.queue_size > 0 {
+                metrics.queue_size -= 1;
+            }
+            if metrics.active_workers > 0 {
+                metrics.active_workers -= 1;
+            }
+        }
     }
 
     // Save search_results.json to RustFS (source: AI Exploration)
@@ -207,15 +220,18 @@ pub async fn ai_exploration(
         "limit": request.limit,
         "results": results
     }))
-    .unwrap();
+    .unwrap_or_default();
 
-    let _ = s3::save_to_rustfs_content(
+    if let Err(e) = s3::save_to_rustfs_content(
         &state.s3_client,
         &bucket_name,
         "search_results.json",
         &result_json_content,
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to save exploration results to S3 bucket {}: {}", bucket_name, e);
+    }
 
     Ok(Json(json!({"data": results})))
 }

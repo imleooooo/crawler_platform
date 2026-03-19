@@ -42,9 +42,10 @@ pub async fn podcast_search(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // Metrics
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.queue_size += 1;
-        metrics.active_workers += 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            metrics.queue_size += 1;
+            metrics.active_workers += 1;
+        }
     }
 
     tracing::info!(
@@ -57,7 +58,12 @@ pub async fn podcast_search(
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .timeout(std::time::Duration::from_secs(300))
         .build()
-        .unwrap();
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("HTTP client init failed: {}", e),
+            )
+        })?;
 
     // 1. iTunes Search
     let itunes_url = "https://itunes.apple.com/search";
@@ -96,18 +102,26 @@ pub async fn podcast_search(
     })?;
 
     let results_array = itunes_data["results"].as_array();
-    if results_array.is_none() || results_array.unwrap().is_empty() {
-        tracing::warn!("iTunes returned 0 results");
-        // Metrics cleanup
-        {
-            let mut metrics = state.metrics.lock().unwrap();
-            metrics.queue_size -= 1;
-            metrics.active_workers -= 1;
+    let results_array = match results_array {
+        Some(arr) if !arr.is_empty() => arr,
+        _ => {
+            tracing::warn!("iTunes returned 0 results");
+            // Metrics cleanup
+            {
+                if let Ok(mut metrics) = state.metrics.lock() {
+                    if metrics.queue_size > 0 {
+                        metrics.queue_size -= 1;
+                    }
+                    if metrics.active_workers > 0 {
+                        metrics.active_workers -= 1;
+                    }
+                }
+            }
+            return Ok(Json(json!({"data": [], "message": "No podcasts found"})));
         }
-        return Ok(Json(json!({"data": [], "message": "No podcasts found"})));
-    }
+    };
 
-    let first_result = &results_array.unwrap()[0];
+    let first_result = &results_array[0];
     let feed_url = first_result["feedUrl"].as_str().ok_or((
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         "No feedUrl".to_string(),
@@ -145,7 +159,7 @@ pub async fn podcast_search(
 
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     let bucket_name = if let Some(job_id) = &request.job_id {
         sanitize_bucket_name(job_id)
@@ -190,7 +204,9 @@ pub async fn podcast_search(
         .filter(|c| c.is_alphanumeric() || *c == ' ')
         .collect();
     let podcast_dir = Path::new(&base_output_path).join(safe_collection_name.trim());
-    let _ = tokio::fs::create_dir_all(&podcast_dir).await; // ignore err
+    if let Err(e) = tokio::fs::create_dir_all(&podcast_dir).await {
+        tracing::warn!("Failed to create podcast directory {:?}: {}", podcast_dir, e);
+    }
 
     let mut results = Vec::new();
     let mut downloaded_count = 0;
@@ -271,7 +287,13 @@ pub async fn podcast_search(
                 Ok(res) => {
                     if res.status().is_success() {
                         // Stream to file
-                        let file = tokio::fs::File::create(&filepath).await.ok();
+                        let file = match tokio::fs::File::create(&filepath).await {
+                            Ok(f) => Some(f),
+                            Err(e) => {
+                                tracing::warn!("Failed to create file {:?}: {}", filepath, e);
+                                None
+                            }
+                        };
                         if let Some(mut f) = file {
                             let mut stream = res.bytes_stream();
                             let mut success = true;
@@ -332,9 +354,14 @@ pub async fn podcast_search(
 
     // Metrics cleanup
     {
-        let mut metrics = state.metrics.lock().unwrap();
-        metrics.queue_size -= 1;
-        metrics.active_workers -= 1;
+        if let Ok(mut metrics) = state.metrics.lock() {
+            if metrics.queue_size > 0 {
+                metrics.queue_size -= 1;
+            }
+            if metrics.active_workers > 0 {
+                metrics.active_workers -= 1;
+            }
+        }
     }
 
     // Save search_results.json to RustFS (source: iTunes Podcast API)
@@ -349,15 +376,18 @@ pub async fn podcast_search(
         "keywords": request.keywords,
         "results": results
     }))
-    .unwrap();
+    .unwrap_or_default();
 
-    let _ = s3::save_to_rustfs_content(
+    if let Err(e) = s3::save_to_rustfs_content(
         &state.s3_client,
         &bucket_name,
         "search_results.json",
         &result_json_content,
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to save podcast results to S3 bucket {}: {}", bucket_name, e);
+    }
 
     Ok(Json(json!({"data": results})))
 }

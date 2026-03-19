@@ -44,7 +44,7 @@ impl Agent {
         let model = config.model.as_deref().unwrap_or("gpt-5.1"); // Default model
         let prompt = config.prompt.as_deref().unwrap_or("Extract content");
 
-        println!("Agent started. Prompt: {}", prompt);
+        tracing::info!("Agent started. Prompt: {}", prompt);
 
         for step in 0..max_steps {
             // 1. Get State (Simplified DOM or Screenshot if we had vision)
@@ -96,7 +96,7 @@ impl Agent {
                 ))
             })?;
 
-            println!("Step {}: Action {:?}", step, action);
+            tracing::debug!("Step {}: Action {:?}", step, action);
             history.push(format!("Step {}: {:?}", step, action));
 
             // 5. Handle Control Flow Actions
@@ -166,7 +166,7 @@ impl Agent {
                     ));
                 }
                 Err(e) => {
-                    println!("Step {}: Action Failed: {}", step, e);
+                    tracing::warn!("Step {}: Action Failed: {}", step, e);
                     history.push(format!("Step {}: Action Failed: {}", step, e));
                     // Check if this was a critical repeated failure? For now, just let LLM retry.
                 }

@@ -41,15 +41,11 @@ pub async fn storage_stats(
                         .to_uppercase();
 
                     // Generate presigned URL using the public client (for frontend access)
+                    // PresigningConfig::expires_in only fails for zero/negative durations, so this is safe.
                     let presigning_config = aws_sdk_s3::presigning::PresigningConfig::expires_in(
                         std::time::Duration::from_secs(3600),
                     )
-                    .unwrap_or_else(|_| {
-                        aws_sdk_s3::presigning::PresigningConfig::expires_in(
-                            std::time::Duration::from_secs(300),
-                        )
-                        .unwrap()
-                    });
+                    .expect("presigning config with 3600s duration is always valid");
 
                     let presigned_req = state
                         .s3_client_public
@@ -62,9 +58,8 @@ pub async fn storage_stats(
                     let url = match presigned_req {
                         Ok(req) => req.uri().to_string(),
                         Err(e) => {
-                            eprintln!("Failed to presign URL for {}/{}: {}", name, key, e);
                             tracing::error!("Failed to presign URL for {}/{}: {}", name, key, e);
-                            format!("http://localhost:9000/{}/{}", name, key) // Fallback
+                            continue; // Skip this file rather than returning a broken localhost URL
                         }
                     };
 
