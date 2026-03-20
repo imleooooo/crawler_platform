@@ -216,9 +216,16 @@ async fn main() {
         });
 
     // HTTP connections are fully drained; worker already received the shutdown
-    // signal at signal time — wait for any in-progress task to complete.
-    if let Err(e) = worker_handle.await {
-        tracing::error!("Worker task panicked: {:?}", e);
+    // signal at signal time — wait for any in-progress task to complete, but
+    // enforce a hard deadline so a stuck crawl cannot block a deployment forever.
+    const WORKER_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    match tokio::time::timeout(WORKER_SHUTDOWN_TIMEOUT, worker_handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!("Worker task panicked: {:?}", e),
+        Err(_) => tracing::error!(
+            "Worker did not finish within {}s shutdown window; forcing exit",
+            WORKER_SHUTDOWN_TIMEOUT.as_secs()
+        ),
     }
 }
 
