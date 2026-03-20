@@ -67,15 +67,14 @@ pub async fn podcast_search(
             )
         })?;
 
-    // download_client: generous total timeout for large audio files.
-    // connect_timeout catches origins that accept the TCP handshake then stall;
-    // timeout catches origins that start sending but stop mid-transfer.
-    // Without a total timeout, one stalled download holds a concurrency slot
-    // open indefinitely and can eventually exhaust the 200-slot limiter.
+    // download_client: connect_timeout only — no total transfer deadline.
+    // reqwest's timeout() is an end-to-end cap, not an idle timeout, so it
+    // would abort healthy large episodes that simply take a long time.
+    // Stalled origins (connection accepted, then silent) are detected per-chunk
+    // in the stream loop below via tokio::time::timeout on each stream.next().
     let download_client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(1800)) // 30 min — large episodes on slow origins
         .build()
         .map_err(|e| {
             (
@@ -343,10 +342,24 @@ pub async fn podcast_search(
                         if let Some(mut f) = file {
                             let mut stream = res.bytes_stream();
                             let mut success = true;
-                            while let Some(item) = stream.next().await {
-                                let item: Result<bytes::Bytes, _> = item;
-                                match item {
-                                    Ok(chunk) => {
+                            // Per-chunk idle timeout: fires only when the origin
+                            // stops sending data, not during normal slow transfers.
+                            // This releases the concurrency slot from stalled
+                            // origins without cutting off healthy large episodes.
+                            const CHUNK_IDLE_TIMEOUT: std::time::Duration =
+                                std::time::Duration::from_secs(30);
+                            loop {
+                                match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, stream.next()).await
+                                {
+                                    Err(_) => {
+                                        // No chunk arrived within 30s — origin stalled
+                                        result_entry.error =
+                                            Some("Audio download stalled (30s idle)".to_string());
+                                        success = false;
+                                        break;
+                                    }
+                                    Ok(None) => break, // stream finished normally
+                                    Ok(Some(Ok(chunk))) => {
                                         if tokio::io::AsyncWriteExt::write_all(&mut f, &chunk)
                                             .await
                                             .is_err()
@@ -355,7 +368,7 @@ pub async fn podcast_search(
                                             break;
                                         }
                                     }
-                                    Err(_) => {
+                                    Ok(Some(Err(_))) => {
                                         success = false;
                                         break;
                                     }

@@ -18,6 +18,19 @@ pub async fn run_worker(state: AppState, shutdown: watch::Receiver<bool>) {
         // Dequeue with 5 second timeout
         match state.queue_service.dequeue(5.0).await {
             Ok(Some(task)) => {
+                // Re-check shutdown: a task enqueued just before the gate closed
+                // can wake BLPOP after shutdown_tx fired. Re-enqueue it so it is
+                // not lost, then exit without starting a new crawl.
+                if *shutdown.borrow() {
+                    tracing::info!(
+                        "Worker dequeued task after shutdown signal; re-enqueueing for next start"
+                    );
+                    if let Err(e) = state.queue_service.enqueue(task).await {
+                        tracing::warn!("Failed to re-enqueue task during shutdown: {}", e);
+                    }
+                    break;
+                }
+
                 tracing::info!("Worker received task with {} URLs", task.urls.len());
 
                 // Update metrics (optional / simplified)
