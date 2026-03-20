@@ -19,7 +19,11 @@ impl AppConfig {
 
         macro_rules! require_env {
             ($var:expr) => {
-                std::env::var($var).map_err(|_| errors.push(format!("Missing required env var: {}", $var))).ok()
+                match std::env::var($var) {
+                    Ok(v) if !v.is_empty() => Some(v),
+                    Ok(_) => { errors.push(format!("Env var {} is set but empty", $var)); None }
+                    Err(_) => { errors.push(format!("Missing required env var: {}", $var)); None }
+                }
             };
         }
 
