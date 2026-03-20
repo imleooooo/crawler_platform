@@ -54,10 +54,13 @@ pub async fn save_to_rustfs_content(
     key: &str,
     content: &str,
 ) -> Result<String, String> {
-    // Propagate bucket-creation timeout: if the bucket was not created we must
-    // not attempt the upload — put_object against a missing bucket returns
-    // NoSuchBucket, which is harder to diagnose than the root cause.
-    create_bucket_if_not_exists(client, bucket_name).await?;
+    // Best-effort bucket creation; always proceed to put_object regardless of
+    // the outcome. create_bucket timing out does not mean the bucket is absent
+    // (it may already exist or be created concurrently); blocking the upload on
+    // a slow control-plane call regresses pre-existing buckets unnecessarily.
+    // If the bucket genuinely does not exist, put_object will surface that as
+    // a clear NoSuchBucket error.
+    create_bucket_if_not_exists(client, bucket_name).await;
 
     let body = ByteStream::from(content.as_bytes().to_vec());
 
@@ -85,7 +88,7 @@ pub async fn save_to_rustfs_file(
     key: &str,
     filepath: &Path,
 ) -> Result<String, String> {
-    create_bucket_if_not_exists(client, bucket_name).await?;
+    create_bucket_if_not_exists(client, bucket_name).await;
 
     let body = ByteStream::from_path(filepath)
         .await
@@ -102,30 +105,22 @@ pub async fn save_to_rustfs_file(
     Ok(format!("s3://{}/{}", bucket_name, key))
 }
 
-/// Returns Ok(()) if the bucket exists or was just created.
-/// Returns Err if the creation request timed out — callers must not proceed
-/// with put_object in that case, as the bucket may not yet exist.
-/// Non-timeout errors (BucketAlreadyExists, permission denied) are treated as
-/// Ok(()) to preserve compatibility with pre-provisioned buckets where the
-/// caller only has PutObject permission.
-async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) -> Result<(), String> {
+/// Best-effort bucket creation. Always returns; callers proceed to put_object
+/// unconditionally. Timeouts and unexpected errors are logged but do not abort
+/// the upload — the bucket may already exist (pre-provisioned, or just slow
+/// control-plane), and put_object is the authoritative check.
+async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) {
     match tokio::time::timeout(
         S3_BUCKET_TIMEOUT,
         client.create_bucket().bucket(bucket_name).send(),
     )
     .await
     {
-        Err(_) => {
-            tracing::warn!(
-                "Timed out creating bucket {} after {}s — aborting upload to avoid NoSuchBucket",
-                bucket_name,
-                S3_BUCKET_TIMEOUT.as_secs()
-            );
-            Err(format!(
-                "Bucket creation timed out after {}s",
-                S3_BUCKET_TIMEOUT.as_secs()
-            ))
-        }
+        Err(_) => tracing::warn!(
+            "Timed out creating bucket {} after {}s — proceeding to put_object",
+            bucket_name,
+            S3_BUCKET_TIMEOUT.as_secs()
+        ),
         Ok(Err(e)) => {
             let err_str = e.to_string();
             if !err_str.contains("BucketAlreadyExists")
@@ -133,8 +128,7 @@ async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) -> Resu
             {
                 tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
             }
-            Ok(())
         }
-        Ok(Ok(_)) => Ok(()),
+        Ok(Ok(_)) => {}
     }
 }
