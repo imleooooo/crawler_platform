@@ -12,6 +12,11 @@ impl Default for HttpCrawler {
     }
 }
 
+/// Maximum time to wait for a TCP connection to be established.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Maximum end-to-end time for a single HTTP request (connect + send + response headers + body).
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl HttpCrawler {
     pub fn new() -> Self {
         Self {
@@ -20,6 +25,8 @@ impl HttpCrawler {
                 .user_agent(
                     "Mozilla/5.0 (compatible; LabCrawl/1.0; +https://github.com/example/lab-crawl)",
                 )
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
                 .build()
                 .expect("Failed to build HTTP client"),
         }

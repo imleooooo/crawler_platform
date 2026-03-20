@@ -1,5 +1,10 @@
 use crate::config::{BrowserConfig, CrawlResult, CrawlerRunConfig};
 use crate::errors::CrawlError;
+
+/// Hard deadline for page.goto() — covers TCP connect + TLS + server response start.
+const NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Hard deadline for wait_for_navigation() / find_element() after the initial load.
+const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 use crate::strategies::stealth::{apply_stealth, StealthConfig};
 use chromiumoxide::browser::BrowserConfig as CBrowserConfig;
 use chromiumoxide::handler::viewport::Viewport;
@@ -157,20 +162,26 @@ impl BrowserManager {
             }
         }
 
-        page.goto(&run_config.url)
+        tokio::time::timeout(NAVIGATION_TIMEOUT, page.goto(&run_config.url))
             .await
+            .map_err(|_| CrawlError::NavigationError("goto timed out (30s)".to_string()))?
             .map_err(|e| CrawlError::NavigationError(e.to_string()))?;
 
         // Wait for element if specified
         if let Some(wait_for) = &run_config.wait_for {
-            // Basic wait for selector
-            page.find_element(wait_for.as_str())
+            tokio::time::timeout(WAIT_TIMEOUT, page.find_element(wait_for.as_str()))
                 .await
+                .map_err(|_| {
+                    CrawlError::ElementNotFound("find_element timed out (30s)".to_string())
+                })?
                 .map_err(|e| CrawlError::ElementNotFound(e.to_string()))?;
         } else {
             // Default wait (network idle or load)
-            page.wait_for_navigation()
+            tokio::time::timeout(WAIT_TIMEOUT, page.wait_for_navigation())
                 .await
+                .map_err(|_| {
+                    CrawlError::NavigationError("wait_for_navigation timed out (30s)".to_string())
+                })?
                 .map_err(|e| CrawlError::NavigationError(e.to_string()))?;
         }
 
