@@ -48,7 +48,7 @@ pub async fn save_to_rustfs_content(
     key: &str,
     content: &str,
 ) -> Result<String, String> {
-    create_bucket_if_not_exists(client, bucket_name).await?;
+    create_bucket_if_not_exists(client, bucket_name).await;
 
     let body = ByteStream::from(content.as_bytes().to_vec());
     client
@@ -69,7 +69,7 @@ pub async fn save_to_rustfs_file(
     key: &str,
     filepath: &Path,
 ) -> Result<String, String> {
-    create_bucket_if_not_exists(client, bucket_name).await?;
+    create_bucket_if_not_exists(client, bucket_name).await;
 
     let body = ByteStream::from_path(filepath)
         .await
@@ -87,13 +87,12 @@ pub async fn save_to_rustfs_file(
     Ok(format!("s3://{}/{}", bucket_name, key))
 }
 
-async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) -> Result<(), String> {
+async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) {
     if let Err(e) = client.create_bucket().bucket(bucket_name).send().await {
         let err_str = e.to_string();
         if !err_str.contains("BucketAlreadyExists") && !err_str.contains("BucketAlreadyOwnedByYou") {
-            return Err(format!("Failed to create bucket {}: {}", bucket_name, e));
+            tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
         }
     }
-    Ok(())
 }
 
