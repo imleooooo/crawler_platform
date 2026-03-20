@@ -2,11 +2,19 @@ use crate::services::{crawler, s3};
 use crate::state::AppState;
 use serde_json::json;
 use std::time::SystemTime;
+use tokio::sync::watch;
 use uuid::Uuid;
 
-pub async fn run_worker(state: AppState) {
+pub async fn run_worker(state: AppState, shutdown: watch::Receiver<bool>) {
     tracing::info!("Worker started");
     loop {
+        // Check for shutdown before dequeuing the next task.
+        // If we are mid-task this check is skipped; the current task runs to completion.
+        if *shutdown.borrow() {
+            tracing::info!("Worker received shutdown signal, exiting");
+            break;
+        }
+
         // Dequeue with 5 second timeout
         match state.queue_service.dequeue(5.0).await {
             Ok(Some(task)) => {

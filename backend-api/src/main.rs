@@ -91,10 +91,11 @@ async fn main() {
         openai_api_key: cfg.openai_api_key,
     };
 
-    // Spawn Worker
+    // Spawn Worker with a shutdown channel so main can coordinate clean exit
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let worker_state = state.clone();
-    tokio::spawn(async move {
-        worker::run_worker(worker_state).await;
+    let worker_handle = tokio::spawn(async move {
+        worker::run_worker(worker_state, shutdown_rx).await;
     });
 
     // CORS: restrict to explicitly configured origins only
@@ -138,10 +139,13 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8000);
+    let port: u16 = match std::env::var("PORT") {
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| {
+            eprintln!("FATAL: PORT env var '{}' is not a valid port number", v);
+            std::process::exit(1);
+        }),
+        Err(_) => 8000,
+    };
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
@@ -155,6 +159,13 @@ async fn main() {
             eprintln!("FATAL: Server error: {}", e);
             std::process::exit(1);
         });
+
+    // HTTP connections are fully drained — now signal the worker to stop
+    // and wait for any in-progress task to complete before exiting.
+    let _ = shutdown_tx.send(true);
+    if let Err(e) = worker_handle.await {
+        tracing::error!("Worker task panicked: {:?}", e);
+    }
 }
 
 async fn shutdown_signal() {
