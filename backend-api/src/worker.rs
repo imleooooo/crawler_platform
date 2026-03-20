@@ -20,11 +20,28 @@ fn sanitize_url_for_log(raw: &str) -> String {
             format!("{}://{}{}", u.scheme(), host_part, u.path())
         }
         Err(_) => {
-            // Do not log the raw string — it may contain credentials in the
-            // authority or path (e.g. user:pass@host/token/path). Log only the
-            // byte length so the Vec entry is distinguishable without exposure.
-            // Operators can recover the full URL from their original request logs.
-            format!("[unparseable: {} bytes]", raw.len())
+            // Url::parse failed (scheme-less or malformed URL).
+            // We can't use the full raw string — it may contain credentials.
+            // Best-effort manual strip:
+            //   1. Truncate at the first '?' or '#' to remove query/fragment
+            //      (most common location for tokens and signed-URL parameters).
+            //   2. Redact any userinfo before '@' that precedes the first '/'
+            //      to remove user:pass@ style authority credentials.
+            // This keeps enough of the URL for operator recovery while
+            // suppressing the most likely secret-bearing components.
+            let cut = match (raw.find('?'), raw.find('#')) {
+                (Some(q), Some(f)) => q.min(f),
+                (Some(q), None) => q,
+                (None, Some(f)) => f,
+                (None, None) => raw.len(),
+            };
+            let base = &raw[..cut];
+            let first_slash = base.find('/').unwrap_or(base.len());
+            if let Some(at) = base[..first_slash].find('@') {
+                format!("[redacted]@{}", &base[at + 1..])
+            } else {
+                base.to_string()
+            }
         }
     }
 }
