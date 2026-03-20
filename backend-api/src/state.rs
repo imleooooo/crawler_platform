@@ -12,6 +12,7 @@ pub struct AppState {
     pub google_api_key: String,
     pub google_cx: String,
     pub api_key: String,
+    pub openai_api_key: String,
 }
 
 pub struct MetricsState {

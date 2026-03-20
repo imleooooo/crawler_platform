@@ -15,7 +15,6 @@ static URL_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 pub struct AgentCrawlRequest {
     pub url: String,
     pub prompt: String,
-    pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
     pub job_id: Option<String>,
@@ -73,7 +72,7 @@ pub async fn agent_crawl(
     let crawl_req = crawler::CrawlerRequest {
         urls: vec![target_url],
         run_mode: Some("agent".to_string()),
-        api_key: Some(request.api_key),
+        api_key: Some(state.openai_api_key.clone()),
         prompt: Some(request.prompt),
         model: Some(request.model),
         output_dir: None,

@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub google_cx: String,
     /// Bearer token required on all protected API routes via `Authorization: Bearer <key>`
     pub api_key: String,
+    pub openai_api_key: String,
     /// Comma-separated list of allowed CORS origins, e.g. "https://app.example.com,https://admin.example.com"
     pub allowed_origins: Vec<String>,
 }
@@ -30,6 +31,7 @@ impl AppConfig {
         let google_api_key = require_env!("GOOGLE_API_KEY");
         let google_cx = require_env!("GOOGLE_CX");
         let api_key = require_env!("API_KEY");
+        let openai_api_key = require_env!("OPENAI_API_KEY");
 
         let allowed_origins_raw = std::env::var("ALLOWED_ORIGINS").unwrap_or_default();
         let allowed_origins: Vec<String> = allowed_origins_raw
@@ -56,6 +58,7 @@ impl AppConfig {
             google_api_key: google_api_key.unwrap(),
             google_cx: google_cx.unwrap(),
             api_key: api_key.unwrap(),
+            openai_api_key: openai_api_key.unwrap(),
             allowed_origins,
         })
     }

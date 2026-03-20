@@ -88,6 +88,7 @@ async fn main() {
         google_api_key: cfg.google_api_key,
         google_cx: cfg.google_cx,
         api_key: cfg.api_key,
+        openai_api_key: cfg.openai_api_key,
     };
 
     // Spawn Worker
