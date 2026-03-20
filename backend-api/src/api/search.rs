@@ -1,9 +1,10 @@
 use axum::{extract::State, Json};
+use backon::{ExponentialBuilder, Retryable};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 use crate::services::{crawler, s3, sanitize_bucket_name};
@@ -124,23 +125,54 @@ async fn search_logic(
             }
 
             let url = "https://www.googleapis.com/customsearch/v1";
-            let mut req_builder = client.get(url).query(&[
-                ("key", &google_api_key),
-                ("cx", &google_cx),
-                ("q", &query),
-                ("num", &num.to_string()),
-                ("start", &start_index.to_string()),
-            ]);
-
+            // Build params as owned strings so the retry closure can clone them
+            // without lifetime issues (RequestBuilder is not Clone).
+            let mut params: Vec<(String, String)> = vec![
+                ("key".into(), google_api_key.clone()),
+                ("cx".into(), google_cx.clone()),
+                ("q".into(), query.clone()),
+                ("num".into(), num.to_string()),
+                ("start".into(), start_index.to_string()),
+            ];
             if let Some(ref t) = request.time_limit {
-                req_builder = req_builder.query(&[("dateRestrict", t)]);
+                params.push(("dateRestrict".into(), t.clone()));
             }
             if let Some(ref s) = request.site {
-                req_builder =
-                    req_builder.query(&[("siteSearch", s.as_str()), ("siteSearchFilter", "i")]);
+                params.push(("siteSearch".into(), s.clone()));
+                params.push(("siteSearchFilter".into(), "i".into()));
             }
 
-            match req_builder.send().await {
+            let google_result = (|| {
+                let p = params.clone();
+                let c = client.clone();
+                async move {
+                    c.get(url)
+                        .query(&p)
+                        .send()
+                        .await
+                        .map_err(|e| format!("Google Search failed: {}", e))
+                        .and_then(|r| {
+                            if r.status().is_server_error() {
+                                Err(format!("Google Search server error: {}", r.status()))
+                            } else {
+                                Ok(r)
+                            }
+                        })
+                }
+            })
+            .retry(
+                ExponentialBuilder::default()
+                    .with_min_delay(Duration::from_millis(300))
+                    .with_max_delay(Duration::from_secs(5))
+                    .with_max_times(3),
+            )
+            .await;
+
+            match google_result {
+                Err(e) => {
+                    tracing::error!("Error searching for {}: {}", keyword, e);
+                    break;
+                }
                 Ok(resp) => {
                     if resp.status().is_success() {
                         if let Ok(data) = resp.json::<Value>().await {
@@ -184,10 +216,6 @@ async fn search_logic(
                         );
                         break;
                     }
-                }
-                Err(e) => {
-                    tracing::error!("Error searching for {}: {}", keyword, e);
-                    break;
                 }
             }
 

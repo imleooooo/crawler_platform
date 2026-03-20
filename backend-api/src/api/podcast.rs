@@ -1,11 +1,12 @@
 use axum::{extract::State, Json};
+use backon::{ExponentialBuilder, Retryable};
 use chrono::Utc;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
-use std::time::SystemTime;
-use uuid::Uuid; // For streaming download if needed, though reqwest::Response::bytes_stream/chunk works
+use std::time::{Duration, SystemTime};
+use uuid::Uuid;
 
 use crate::services::{s3, sanitize_bucket_name};
 use crate::state::AppState;
@@ -87,20 +88,36 @@ pub async fn podcast_search(
     let itunes_url = "https://itunes.apple.com/search";
     tracing::info!("Querying iTunes: {}", itunes_url);
 
-    let resp = client
-        .get(itunes_url)
-        .query(&[
-            ("media", "podcast"),
-            ("term", &request.keywords),
-            ("limit", "1"),
-        ]) // Force limit 1 for now for test
-        .send()
-        .await
-        .map_err(|e| {
-            let err_msg = format!("iTunes API failed: {}", e);
-            tracing::error!("{}", err_msg);
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, err_msg)
-        })?;
+    let resp = (|| async {
+        client
+            .get(itunes_url)
+            .query(&[
+                ("media", "podcast"),
+                ("term", request.keywords.as_str()),
+                ("limit", "1"),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("iTunes API failed: {}", e))
+            .and_then(|r| {
+                if r.status().is_server_error() {
+                    Err(format!("iTunes server error: {}", r.status()))
+                } else {
+                    Ok(r)
+                }
+            })
+    })
+    .retry(
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(300))
+            .with_max_delay(Duration::from_secs(5))
+            .with_max_times(3),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("{}", e);
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
 
     let status = resp.status();
     tracing::info!("iTunes Response Status: {}", status);
@@ -149,24 +166,35 @@ pub async fn podcast_search(
         .unwrap_or("Unknown Podcast");
 
     // 2. Parse Feed
-    let feed_content = client
-        .get(feed_url)
-        .send()
-        .await
-        .map_err(|e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Feed fetch failed: {}", e),
-            )
-        })?
-        .bytes()
-        .await
-        .map_err(|_| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Feed bytes error".to_string(),
-            )
-        })?;
+    let feed_resp = (|| async {
+        client
+            .get(feed_url)
+            .send()
+            .await
+            .map_err(|e| format!("Feed fetch failed: {}", e))
+            .and_then(|r| {
+                if r.status().is_server_error() {
+                    Err(format!("Feed server error: {}", r.status()))
+                } else {
+                    Ok(r)
+                }
+            })
+    })
+    .retry(
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(300))
+            .with_max_delay(Duration::from_secs(5))
+            .with_max_times(3),
+    )
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let feed_content = feed_resp.bytes().await.map_err(|_| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "Feed bytes error".to_string(),
+        )
+    })?;
 
     let feed = feed_rs::parser::parse(feed_content.as_ref()).map_err(|e| {
         (

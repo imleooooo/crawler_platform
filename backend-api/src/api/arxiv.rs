@@ -1,9 +1,10 @@
 use axum::{extract::State, Json};
+use backon::{ExponentialBuilder, Retryable};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 use crate::services::{s3, sanitize_bucket_name};
@@ -65,23 +66,36 @@ pub async fn arxiv_search(
         .build()
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let resp = client
-        .get(url)
-        .query(&[
-            ("search_query", &query),
-            ("start", &"0".to_string()),
-            ("max_results", &request.limit.to_string()),
-            ("sortBy", &"submittedDate".to_string()),
-            ("sortOrder", &"descending".to_string()),
-        ])
-        .send()
-        .await
-        .map_err(|e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("ArXiv API failed: {}", e),
-            )
-        })?;
+    let limit_str = request.limit.to_string();
+    let resp = (|| async {
+        client
+            .get(url)
+            .query(&[
+                ("search_query", query.as_str()),
+                ("start", "0"),
+                ("max_results", limit_str.as_str()),
+                ("sortBy", "submittedDate"),
+                ("sortOrder", "descending"),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("ArXiv API failed: {}", e))
+            .and_then(|r| {
+                if r.status().is_server_error() {
+                    Err(format!("ArXiv server error: {}", r.status()))
+                } else {
+                    Ok(r)
+                }
+            })
+    })
+    .retry(
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(300))
+            .with_max_delay(Duration::from_secs(5))
+            .with_max_times(3),
+    )
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     if !resp.status().is_success() {
         return Err((
