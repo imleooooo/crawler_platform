@@ -3,8 +3,6 @@ use aws_sdk_s3::Client;
 use std::path::Path;
 use std::time::Duration;
 
-// Tight timeout for small JSON/markdown content uploads.
-const S3_CONTENT_TIMEOUT: Duration = Duration::from_secs(15);
 // Generous timeout for large binary files (PDFs, audio).
 const S3_FILE_TIMEOUT: Duration = Duration::from_secs(300);
 // Bucket creation is a lightweight control-plane call.
@@ -56,15 +54,26 @@ pub async fn save_to_rustfs_content(
     key: &str,
     content: &str,
 ) -> Result<String, String> {
-    create_bucket_if_not_exists(client, bucket_name).await;
+    // Propagate bucket-creation timeout: if the bucket was not created we must
+    // not attempt the upload — put_object against a missing bucket returns
+    // NoSuchBucket, which is harder to diagnose than the root cause.
+    create_bucket_if_not_exists(client, bucket_name).await?;
 
     let body = ByteStream::from(content.as_bytes().to_vec());
+
+    // Size-proportional timeout: 30s baseline + 1s per 50 KB, capped at the
+    // large-file ceiling. Prevents hard failures on slow-but-healthy backends
+    // for larger markdown/JSON payloads while still bounding hung uploads.
+    let timeout = (Duration::from_secs(30)
+        + Duration::from_secs((content.len() / (50 * 1024)) as u64))
+    .min(S3_FILE_TIMEOUT);
+
     tokio::time::timeout(
-        S3_CONTENT_TIMEOUT,
+        timeout,
         client.put_object().bucket(bucket_name).key(key).body(body).send(),
     )
     .await
-    .map_err(|_| format!("S3 upload timed out after {}s", S3_CONTENT_TIMEOUT.as_secs()))?
+    .map_err(|_| format!("S3 upload timed out after {}s", timeout.as_secs()))?
     .map_err(|e| format!("Failed to upload content: {}", e))?;
 
     Ok(format!("s3://{}/{}", bucket_name, key))
@@ -76,7 +85,7 @@ pub async fn save_to_rustfs_file(
     key: &str,
     filepath: &Path,
 ) -> Result<String, String> {
-    create_bucket_if_not_exists(client, bucket_name).await;
+    create_bucket_if_not_exists(client, bucket_name).await?;
 
     let body = ByteStream::from_path(filepath)
         .await
@@ -93,18 +102,30 @@ pub async fn save_to_rustfs_file(
     Ok(format!("s3://{}/{}", bucket_name, key))
 }
 
-async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) {
+/// Returns Ok(()) if the bucket exists or was just created.
+/// Returns Err if the creation request timed out — callers must not proceed
+/// with put_object in that case, as the bucket may not yet exist.
+/// Non-timeout errors (BucketAlreadyExists, permission denied) are treated as
+/// Ok(()) to preserve compatibility with pre-provisioned buckets where the
+/// caller only has PutObject permission.
+async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) -> Result<(), String> {
     match tokio::time::timeout(
         S3_BUCKET_TIMEOUT,
         client.create_bucket().bucket(bucket_name).send(),
     )
     .await
     {
-        Err(_) => tracing::warn!(
-            "Timed out creating bucket {} after {}s",
-            bucket_name,
-            S3_BUCKET_TIMEOUT.as_secs()
-        ),
+        Err(_) => {
+            tracing::warn!(
+                "Timed out creating bucket {} after {}s — aborting upload to avoid NoSuchBucket",
+                bucket_name,
+                S3_BUCKET_TIMEOUT.as_secs()
+            );
+            Err(format!(
+                "Bucket creation timed out after {}s",
+                S3_BUCKET_TIMEOUT.as_secs()
+            ))
+        }
         Ok(Err(e)) => {
             let err_str = e.to_string();
             if !err_str.contains("BucketAlreadyExists")
@@ -112,8 +133,8 @@ async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) {
             {
                 tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
             }
+            Ok(())
         }
-        Ok(Ok(_)) => {}
+        Ok(Ok(_)) => Ok(()),
     }
 }
-
