@@ -23,6 +23,8 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
+      - API_KEY=${API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GOOGLE_CX=${GOOGLE_CX}
       - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}

@@ -51,7 +51,6 @@ const TaskForm = ({ setSearchResults, ...props }) => {
 
     // Agent state
     const [agentPrompt, setAgentPrompt] = useState('');
-    const [agentApiKey, setAgentApiKey] = useState('');
 
     // Visual state
     const [visualInputDir, setVisualInputDir] = useState('');
@@ -210,7 +209,6 @@ const TaskForm = ({ setSearchResults, ...props }) => {
 
     const handleAgentSubmit = async () => {
         if (!agentPrompt.trim()) { alert('請輸入代理人指令'); return; }
-        if (!agentApiKey.trim()) { alert('請輸入 API Key'); return; }
         const newTask = createTask(`Agent: ${agentPrompt.substring(0, 50)}...`, '瀏覽器代理人');
         const progressInterval = setInterval(() => {
             if (props.updateTask) props.updateTask(newTask.id, { progress: Math.min(90, newTask.progress + 2) });
@@ -220,7 +218,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
             const response = await fetch('http://localhost:8000/api/agent-crawl', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: "https://google.com", prompt: agentPrompt, api_key: agentApiKey, model: "gpt-4o", job_id: newTask.id, ignore_links: ignoreLinks }),
+                body: JSON.stringify({ url: "https://google.com", prompt: agentPrompt, model: "gpt-4o", job_id: newTask.id, ignore_links: ignoreLinks }),
             });
             clearInterval(progressInterval);
             if (!response.ok) throw new Error(`Error ${response.status}`);
@@ -474,18 +472,6 @@ const TaskForm = ({ setSearchResults, ...props }) => {
                     value={agentPrompt}
                     onChange={(e) => setAgentPrompt(e.target.value)}
                 />
-            </div>
-            <div>
-                <label htmlFor="modal-api-key" className="block text-[13px] font-medium text-gray-500 uppercase mb-2">OpenAI API Key</label>
-                <input
-                    type="password"
-                    id="modal-api-key"
-                    className="w-full ios-input ios-focus-ring bg-gray-50"
-                    placeholder="sk-..."
-                    value={agentApiKey}
-                    onChange={(e) => setAgentApiKey(e.target.value)}
-                />
-                <p className="text-xs text-gray-400 mt-1">Key 僅用於此次會話</p>
             </div>
             <div className="flex items-center space-x-2 p-3 bg-gray-50 rounded-xl">
                 <input
