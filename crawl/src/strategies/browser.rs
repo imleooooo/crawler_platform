@@ -147,83 +147,96 @@ impl BrowserManager {
             .await
             .map_err(|e| CrawlError::NavigationError(e.to_string()))?;
 
-        // Apply stealth
-        apply_stealth(&page, &StealthConfig::default()).await?;
+        // All navigation logic runs inside an async block so that page.close() below
+        // is guaranteed to execute even when a timeout fires and `?` returns early.
+        let result: Result<CrawlResult, CrawlError> = async {
+            // Apply stealth
+            apply_stealth(&page, &StealthConfig::default()).await?;
 
-        // Apply resource blocking and UA rotation
-        self.apply_resource_blocking(&page, &self.config).await?;
+            // Apply resource blocking and UA rotation
+            self.apply_resource_blocking(&page, &self.config).await?;
 
-        if self.config.rotate_user_agent {
-            let mut rng = thread_rng();
-            if let Some(ua) = crate::user_agents::USER_AGENTS.choose(&mut rng) {
-                page.execute(SetUserAgentOverrideParams::new(ua.to_string()))
-                    .await
-                    .map_err(|e| CrawlError::Other(e.to_string()))?;
+            if self.config.rotate_user_agent {
+                let mut rng = thread_rng();
+                if let Some(ua) = crate::user_agents::USER_AGENTS.choose(&mut rng) {
+                    page.execute(SetUserAgentOverrideParams::new(ua.to_string()))
+                        .await
+                        .map_err(|e| CrawlError::Other(e.to_string()))?;
+                }
             }
-        }
 
-        tokio::time::timeout(NAVIGATION_TIMEOUT, page.goto(&run_config.url))
-            .await
-            .map_err(|_| CrawlError::NavigationError("goto timed out (30s)".to_string()))?
-            .map_err(|e| CrawlError::NavigationError(e.to_string()))?;
-
-        // Wait for element if specified
-        if let Some(wait_for) = &run_config.wait_for {
-            tokio::time::timeout(WAIT_TIMEOUT, page.find_element(wait_for.as_str()))
+            tokio::time::timeout(NAVIGATION_TIMEOUT, page.goto(&run_config.url))
                 .await
-                .map_err(|_| {
-                    CrawlError::ElementNotFound("find_element timed out (30s)".to_string())
-                })?
-                .map_err(|e| CrawlError::ElementNotFound(e.to_string()))?;
-        } else {
-            // Default wait (network idle or load)
-            tokio::time::timeout(WAIT_TIMEOUT, page.wait_for_navigation())
-                .await
-                .map_err(|_| {
-                    CrawlError::NavigationError("wait_for_navigation timed out (30s)".to_string())
-                })?
+                .map_err(|_| CrawlError::NavigationError("goto timed out (30s)".to_string()))?
                 .map_err(|e| CrawlError::NavigationError(e.to_string()))?;
-        }
 
-        // Execute JS if provided
-        if let Some(js) = &run_config.js_code {
-            let _ = page
-                .evaluate(js.as_str())
+            // Wait for element if specified
+            if let Some(wait_for) = &run_config.wait_for {
+                tokio::time::timeout(WAIT_TIMEOUT, page.find_element(wait_for.as_str()))
+                    .await
+                    .map_err(|_| {
+                        CrawlError::ElementNotFound("find_element timed out (30s)".to_string())
+                    })?
+                    .map_err(|e| CrawlError::ElementNotFound(e.to_string()))?;
+            } else {
+                // Default wait (network idle or load)
+                tokio::time::timeout(WAIT_TIMEOUT, page.wait_for_navigation())
+                    .await
+                    .map_err(|_| {
+                        CrawlError::NavigationError(
+                            "wait_for_navigation timed out (30s)".to_string(),
+                        )
+                    })?
+                    .map_err(|e| CrawlError::NavigationError(e.to_string()))?;
+            }
+
+            // Execute JS if provided
+            if let Some(js) = &run_config.js_code {
+                let _ = page
+                    .evaluate(js.as_str())
+                    .await
+                    .map_err(|e| CrawlError::JsError(e.to_string()))?;
+            }
+
+            let content = page
+                .content()
                 .await
-                .map_err(|e| CrawlError::JsError(e.to_string()))?;
+                .map_err(|e| CrawlError::Other(e.to_string()))?;
+
+            let mut screenshot_data = None;
+            if run_config.screenshot {
+                let screenshot_bytes = page
+                    .screenshot(
+                        chromiumoxide::page::ScreenshotParams::builder()
+                            .format(
+                                chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat::Png,
+                            )
+                            .full_page(true)
+                            .build(),
+                    )
+                    .await
+                    .map_err(|e| CrawlError::ScreenshotError(e.to_string()))?;
+
+                screenshot_data = Some(general_purpose::STANDARD.encode(screenshot_bytes));
+            }
+
+            Ok(CrawlResult {
+                url: run_config.url,
+                html: content,
+                markdown: None, // To be filled later
+                screenshot: screenshot_data,
+                status_code: 200, // Hard to get exact status code with CDP sometimes, default to 200 if successful
+                success: true,
+                error_message: None,
+            })
         }
+        .await;
 
-        let content = page
-            .content()
-            .await
-            .map_err(|e| CrawlError::Other(e.to_string()))?;
+        // Always close the tab — prevents orphaned navigations accumulating in the
+        // pooled browser when a timeout fired and the inner block returned Err early.
+        let _ = page.close().await;
 
-        let mut screenshot_data = None;
-        if run_config.screenshot {
-            let screenshot_bytes = page.screenshot(chromiumoxide::page::ScreenshotParams::builder()
-                .format(chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat::Png)
-                .full_page(true)
-                .build()
-            ).await.map_err(|e| CrawlError::ScreenshotError(e.to_string()))?;
-
-            screenshot_data = Some(general_purpose::STANDARD.encode(screenshot_bytes));
-        }
-
-        let result = CrawlResult {
-            url: run_config.url,
-            html: content,
-            markdown: None, // To be filled later
-            screenshot: screenshot_data,
-            status_code: 200, // Hard to get exact status code with CDP sometimes, default to 200 if successful
-            success: true,
-            error_message: None,
-        };
-
-        page.close()
-            .await
-            .map_err(|e| CrawlError::Other(e.to_string()))?;
-
-        Ok(result)
+        result
     }
 
     pub async fn close(mut self) {
