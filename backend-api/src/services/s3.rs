@@ -5,8 +5,6 @@ use std::time::Duration;
 
 // Generous timeout for large binary files (PDFs, audio).
 const S3_FILE_TIMEOUT: Duration = Duration::from_secs(300);
-// Bucket creation is a lightweight control-plane call.
-const S3_BUCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sanitize a string to be a valid S3 bucket name.
 /// S3 bucket names must:
@@ -105,30 +103,17 @@ pub async fn save_to_rustfs_file(
     Ok(format!("s3://{}/{}", bucket_name, key))
 }
 
-/// Best-effort bucket creation. Always returns; callers proceed to put_object
-/// unconditionally. Timeouts and unexpected errors are logged but do not abort
-/// the upload — the bucket may already exist (pre-provisioned, or just slow
-/// control-plane), and put_object is the authoritative check.
+/// Best-effort bucket creation. Awaits completion so that a slow control-plane
+/// does not cause the subsequent put_object to fail with NoSuchBucket.
+/// Unexpected errors are logged but do not abort the upload — the bucket may
+/// already exist (pre-provisioned, or created by a concurrent request).
+/// put_object is the authoritative failure signal if the bucket is absent.
 async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) {
-    match tokio::time::timeout(
-        S3_BUCKET_TIMEOUT,
-        client.create_bucket().bucket(bucket_name).send(),
-    )
-    .await
-    {
-        Err(_) => tracing::warn!(
-            "Timed out creating bucket {} after {}s — proceeding to put_object",
-            bucket_name,
-            S3_BUCKET_TIMEOUT.as_secs()
-        ),
-        Ok(Err(e)) => {
-            let err_str = e.to_string();
-            if !err_str.contains("BucketAlreadyExists")
-                && !err_str.contains("BucketAlreadyOwnedByYou")
-            {
-                tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
-            }
+    if let Err(e) = client.create_bucket().bucket(bucket_name).send().await {
+        let err_str = e.to_string();
+        if !err_str.contains("BucketAlreadyExists") && !err_str.contains("BucketAlreadyOwnedByYou")
+        {
+            tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
         }
-        Ok(Ok(_)) => {}
     }
 }
