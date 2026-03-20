@@ -1,9 +1,13 @@
 use crate::state::AppState;
-use axum::{extract::State, Json};
+use axum::{extract::State, http::StatusCode, Json};
 use serde_json::{json, Value};
 
 pub async fn root() -> Json<Value> {
     Json(json!({"Hello": "World from Backend API (Rust)"}))
+}
+
+pub async fn healthz() -> (StatusCode, Json<Value>) {
+    (StatusCode::OK, Json(json!({"status": "ok"})))
 }
 
 pub async fn get_metrics(State(state): State<AppState>) -> Json<Value> {

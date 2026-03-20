@@ -9,6 +9,7 @@ use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
 mod api;
@@ -26,7 +27,15 @@ use state::{AppState, MetricsState};
 #[tokio::main]
 async fn main() {
     dotenv().ok();
-    tracing_subscriber::fmt::init();
+
+    // Structured JSON logging, level controlled by RUST_LOG (default: info)
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     // Validate all required environment variables at startup — fail fast if any are missing.
     let cfg = AppConfig::from_env().unwrap_or_else(|e| {
@@ -134,9 +143,12 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(api::general::root))
+        .route("/healthz", get(api::general::healthz))
         .merge(protected)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state);
 
     let port: u16 = match std::env::var("PORT") {
