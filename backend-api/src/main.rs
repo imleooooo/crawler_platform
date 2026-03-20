@@ -8,6 +8,7 @@ use axum::{
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -101,9 +102,9 @@ async fn main() {
     let queue_service = QueueService::new(redis_pool);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    // enqueue_gate: true = open. Shutdown closes this (under lock) before
-    // signalling the worker, atomically preventing new enqueues.
-    let enqueue_gate = Arc::new(tokio::sync::Mutex::new(true));
+    // enqueue_gate: true = open. Shutdown stores false (Release ordering)
+    // before signalling the worker. Non-blocking; no mutex needed.
+    let enqueue_gate = Arc::new(AtomicBool::new(true));
 
     let state = AppState {
         s3_client,
@@ -223,7 +224,7 @@ async fn main() {
 
 async fn shutdown_signal(
     shutdown_tx: tokio::sync::watch::Sender<bool>,
-    enqueue_gate: Arc<tokio::sync::Mutex<bool>>,
+    enqueue_gate: Arc<AtomicBool>,
 ) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -247,15 +248,10 @@ async fn shutdown_signal(
         _ = terminate => {},
     }
 
-    // Close the enqueue gate while holding the lock, then signal the worker.
-    // Any in-flight check-then-enqueue holds the same lock, so closing the gate
-    // here is atomic with respect to new enqueues: either the handler already
-    // holds the lock (and will complete its enqueue before we proceed), or we
-    // close it first and the handler will see false and return 503.
-    {
-        let mut gate = enqueue_gate.lock().await;
-        *gate = false;
-    }
+    // Close the gate (non-blocking) then signal the worker. Requests that
+    // already loaded true before this store may still enqueue one task each;
+    // worst-case leakage is bounded by the concurrency limiter (200).
+    enqueue_gate.store(false, Ordering::Release);
     let _ = shutdown_tx.send(true);
     tracing::info!("shutdown signal received, draining in-flight requests");
 }

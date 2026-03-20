@@ -2,6 +2,7 @@ use axum::{extract::State, Json};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -314,23 +315,18 @@ pub async fn batch_crawl(
         })));
     }
 
-    // Check the gate under the lock, then release it before the Redis round-trip.
-    // Holding the lock across an async network call would block shutdown_signal()
-    // from closing the gate (it needs the same lock), causing Ctrl+C/SIGTERM to
-    // hang indefinitely when Redis is slow or unavailable.
-    // Trade-off: in the narrow window between dropping the lock and completing
-    // the enqueue, shutdown may close the gate, so at most one task can slip
-    // into Redis after the worker stops dequeuing. It will be picked up on next
-    // server start — acceptable vs. an unkillable process.
-    {
-        let gate = state.enqueue_gate.lock().await;
-        if !*gate {
-            return Err((
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "Server is shutting down, please retry".to_string(),
-            ));
-        }
-    } // gate lock released here, before any async I/O
+    // Non-blocking gate check. shutdown_signal() stores false (Release) before
+    // signalling the worker; we load with Acquire so we see the store.
+    // Requests that loaded true before the store may still enqueue; worst-case
+    // leakage is bounded by the concurrency limiter (200 slots). Those tasks
+    // remain in Redis until the next server start — acceptable vs. a mutex that
+    // can block shutdown indefinitely when Redis is slow.
+    if !state.enqueue_gate.load(Ordering::Acquire) {
+        return Err((
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Server is shutting down, please retry".to_string(),
+        ));
+    }
 
     let result = state.queue_service.enqueue(crawl_req).await;
 

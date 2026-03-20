@@ -1,7 +1,7 @@
 use crate::services::queue::QueueService;
 use aws_sdk_s3::Client as S3Client;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -15,9 +15,10 @@ pub struct AppState {
     pub openai_api_key: String,
     /// Guards the check-then-enqueue path against the shutdown race.
     /// true = open (enqueuing allowed); false = closed (return 503).
-    /// Shutdown closes this gate (under the lock) before signalling the worker,
-    /// so no new tasks can be enqueued after the worker stops dequeuing.
-    pub enqueue_gate: Arc<tokio::sync::Mutex<bool>>,
+    /// Shutdown stores false (Release) before signalling the worker. Any
+    /// request that already loaded true before the store may still enqueue
+    /// one task; the worst-case leak is bounded by the concurrency limiter.
+    pub enqueue_gate: Arc<AtomicBool>,
 }
 
 pub struct MetricsState {

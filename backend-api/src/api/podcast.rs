@@ -66,9 +66,15 @@ pub async fn podcast_search(
             )
         })?;
 
-    // download_client: no timeout — episode audio files can be large/slow
+    // download_client: generous total timeout for large audio files.
+    // connect_timeout catches origins that accept the TCP handshake then stall;
+    // timeout catches origins that start sending but stop mid-transfer.
+    // Without a total timeout, one stalled download holds a concurrency slot
+    // open indefinitely and can eventually exhaust the 200-slot limiter.
     let download_client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(1800)) // 30 min — large episodes on slow origins
         .build()
         .map_err(|e| {
             (
