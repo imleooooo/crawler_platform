@@ -156,7 +156,12 @@ pub async fn arxiv_search(
     } else {
         temp_dir_obj
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to obtain temp directory path".to_string(),
+                )
+            })?
             .path()
             .to_string_lossy()
             .to_string()
