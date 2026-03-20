@@ -5,6 +5,10 @@ use std::time::Duration;
 
 // Generous timeout for large binary files (PDFs, audio).
 const S3_FILE_TIMEOUT: Duration = Duration::from_secs(300);
+// Bucket creation timeout: long enough for slow-but-healthy control planes
+// (first-time job buckets), short enough to bound hangs on storage outages.
+// 5s was too short for new bucket creation; no timeout was unbounded.
+const S3_BUCKET_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Sanitize a string to be a valid S3 bucket name.
 /// S3 bucket names must:
@@ -103,17 +107,32 @@ pub async fn save_to_rustfs_file(
     Ok(format!("s3://{}/{}", bucket_name, key))
 }
 
-/// Best-effort bucket creation. Awaits completion so that a slow control-plane
-/// does not cause the subsequent put_object to fail with NoSuchBucket.
-/// Unexpected errors are logged but do not abort the upload — the bucket may
-/// already exist (pre-provisioned, or created by a concurrent request).
-/// put_object is the authoritative failure signal if the bucket is absent.
+/// Best-effort bucket creation. Waits up to S3_BUCKET_TIMEOUT (30s) so that
+/// a slow-but-healthy control plane can complete new bucket creation before
+/// put_object runs, while bounding hangs from a truly unresponsive backend.
+/// Timeouts and unexpected errors are logged; callers always proceed to
+/// put_object — the bucket may already exist, and put_object is the
+/// authoritative failure signal if it is genuinely absent.
 async fn create_bucket_if_not_exists(client: &Client, bucket_name: &str) {
-    if let Err(e) = client.create_bucket().bucket(bucket_name).send().await {
-        let err_str = e.to_string();
-        if !err_str.contains("BucketAlreadyExists") && !err_str.contains("BucketAlreadyOwnedByYou")
-        {
-            tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
+    match tokio::time::timeout(
+        S3_BUCKET_TIMEOUT,
+        client.create_bucket().bucket(bucket_name).send(),
+    )
+    .await
+    {
+        Err(_) => tracing::warn!(
+            "create_bucket timed out after {}s for bucket {} — proceeding to put_object",
+            S3_BUCKET_TIMEOUT.as_secs(),
+            bucket_name,
+        ),
+        Ok(Err(e)) => {
+            let err_str = e.to_string();
+            if !err_str.contains("BucketAlreadyExists")
+                && !err_str.contains("BucketAlreadyOwnedByYou")
+            {
+                tracing::warn!("Unexpected error creating bucket {}: {}", bucket_name, e);
+            }
         }
+        Ok(Ok(_)) => {}
     }
 }
