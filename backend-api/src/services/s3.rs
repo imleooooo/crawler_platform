@@ -72,13 +72,27 @@ pub async fn save_to_rustfs_content(
         Ok(()) => {}
         Err(ref e) if e.contains("NoSuchBucket") => {
             // Bucket is confirmed absent — create it, then retry.
-            // No timeout on create_bucket here: we know the bucket does not
-            // exist, so we must wait for creation to complete; cancelling the
-            // future mid-flight with tokio::time::timeout would leave put_object
-            // racing a partially-created bucket. Truly unresponsive backends are
-            // already bounded by the put_object timeout on the retry below.
+            // ensure_bucket has a 30s timeout; if the control plane is slow
+            // but still making progress, the bucket may become available
+            // moments after the timeout fires. A brief backoff retry loop
+            // catches that window without hanging indefinitely.
             ensure_bucket(client, bucket_name).await;
-            put_content(client, bucket_name, key, content, timeout).await?;
+            let mut last_err = String::new();
+            for delay_secs in [0u64, 1, 3] {
+                if delay_secs > 0 {
+                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                }
+                match put_content(client, bucket_name, key, content, timeout).await {
+                    Ok(()) => {
+                        return Ok(format!("s3://{}/{}", bucket_name, key));
+                    }
+                    Err(e) if e.contains("NoSuchBucket") => {
+                        last_err = e;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            return Err(last_err);
         }
         Err(e) => return Err(e),
     }
@@ -103,10 +117,25 @@ pub async fn save_to_rustfs_file(
         Ok(()) => {}
         Err(ref e) if e.contains("NoSuchBucket") => {
             ensure_bucket(client, bucket_name).await;
-            let body = ByteStream::from_path(filepath)
-                .await
-                .map_err(|e| format!("File error on retry: {}", e))?;
-            put_body(client, bucket_name, key, body, S3_FILE_TIMEOUT).await?;
+            let mut last_err = String::new();
+            for delay_secs in [0u64, 1, 3] {
+                if delay_secs > 0 {
+                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                }
+                let body = ByteStream::from_path(filepath)
+                    .await
+                    .map_err(|e| format!("File error on retry: {}", e))?;
+                match put_body(client, bucket_name, key, body, S3_FILE_TIMEOUT).await {
+                    Ok(()) => {
+                        return Ok(format!("s3://{}/{}", bucket_name, key));
+                    }
+                    Err(e) if e.contains("NoSuchBucket") => {
+                        last_err = e;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            return Err(last_err);
         }
         Err(e) => return Err(e),
     }

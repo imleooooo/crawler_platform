@@ -36,9 +36,32 @@ fn sanitize_url_for_log(raw: &str) -> String {
                 (None, None) => raw.len(),
             };
             let base = &raw[..cut];
-            let first_slash = base.find('/').unwrap_or(base.len());
-            if let Some(at) = base[..first_slash].find('@') {
-                format!("[redacted]@{}", &base[at + 1..])
+            // Locate where the authority component begins so that the
+            // subsequent find('/') skips the slashes in the separator
+            // and lands on the true path boundary.
+            //   "http://user:pass@host/path" → authority_start = 7  (past "://")
+            //   "//user:pass@host/path"      → authority_start = 2  (past "//")
+            //   "user:pass@host/path"        → authority_start = 0  (no separator)
+            // Without this, find('/') stops at the first '/' in "://" or
+            // at index 0 for "//…", leaving an empty authority window so '@'
+            // is never found and credentials pass through unchanged.
+            let authority_start = if let Some(i) = base.find("://") {
+                i + 3
+            } else if base.starts_with("//") {
+                2
+            } else {
+                0
+            };
+            let first_slash = base[authority_start..]
+                .find('/')
+                .map(|i| authority_start + i)
+                .unwrap_or(base.len());
+            if let Some(at) = base[authority_start..first_slash].find('@') {
+                format!(
+                    "{}[redacted]@{}",
+                    &base[..authority_start],
+                    &base[authority_start + at + 1..]
+                )
             } else {
                 base.to_string()
             }
