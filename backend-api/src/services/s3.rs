@@ -5,6 +5,10 @@ use std::time::Duration;
 
 // Generous timeout for large binary files (PDFs, audio).
 const S3_FILE_TIMEOUT: Duration = Duration::from_secs(300);
+// Timeout for create_bucket in the confirmed-absent retry path. A stalled
+// control plane here would hang the upload permanently; if this fires we
+// proceed to put_object, which will return NoSuchBucket as a clear error.
+const S3_BUCKET_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Sanitize a string to be a valid S3 bucket name.
 /// S3 bucket names must:
@@ -138,16 +142,33 @@ async fn put_body(
     Ok(())
 }
 
-/// Create the bucket, waiting for completion. Called only after put_object has
-/// confirmed the bucket is absent, so we must not cancel mid-flight.
-/// Unexpected errors (other than AlreadyExists) are logged; the subsequent
-/// put_object will surface a definitive failure if the bucket still does not exist.
+/// Create the bucket. Called only after put_object has confirmed the bucket is
+/// absent, so this is always a first write to a new bucket.
+/// Bounded by S3_BUCKET_TIMEOUT: a stalled control plane here would hang the
+/// upload permanently before the retry put_object is ever reached. If the
+/// timeout fires the subsequent put_object will return a clear NoSuchBucket.
+/// Unexpected errors (other than AlreadyExists) are logged and the upload
+/// is attempted anyway.
 async fn ensure_bucket(client: &Client, bucket_name: &str) {
-    if let Err(e) = client.create_bucket().bucket(bucket_name).send().await {
-        let err_str = e.to_string();
-        if !err_str.contains("BucketAlreadyExists") && !err_str.contains("BucketAlreadyOwnedByYou")
-        {
-            tracing::warn!("create_bucket failed for {}: {}", bucket_name, e);
+    match tokio::time::timeout(
+        S3_BUCKET_TIMEOUT,
+        client.create_bucket().bucket(bucket_name).send(),
+    )
+    .await
+    {
+        Err(_) => tracing::warn!(
+            "create_bucket timed out after {}s for {} — retrying put_object",
+            S3_BUCKET_TIMEOUT.as_secs(),
+            bucket_name,
+        ),
+        Ok(Err(e)) => {
+            let err_str = e.to_string();
+            if !err_str.contains("BucketAlreadyExists")
+                && !err_str.contains("BucketAlreadyOwnedByYou")
+            {
+                tracing::warn!("create_bucket failed for {}: {}", bucket_name, e);
+            }
         }
+        Ok(Ok(_)) => {}
     }
 }
