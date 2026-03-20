@@ -314,6 +314,16 @@ pub async fn batch_crawl(
         })));
     }
 
+    // Reject new async work during shutdown: the worker has already been
+    // signalled to stop dequeuing, so any task enqueued now would be orphaned
+    // in Redis until the next restart.
+    if *state.shutdown_rx.borrow() {
+        return Err((
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Server is shutting down, please retry".to_string(),
+        ));
+    }
+
     match state.queue_service.enqueue(crawl_req).await {
         Ok(_) => Ok(Json(json!({
             "success": true,

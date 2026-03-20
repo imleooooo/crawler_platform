@@ -2,6 +2,7 @@ use crate::services::queue::QueueService;
 use aws_sdk_s3::Client as S3Client;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -13,6 +14,9 @@ pub struct AppState {
     pub google_cx: String,
     pub api_key: String,
     pub openai_api_key: String,
+    /// Becomes true when a shutdown signal is received. Handlers should
+    /// reject new async (queued) work when this is set.
+    pub shutdown_rx: watch::Receiver<bool>,
 }
 
 pub struct MetricsState {

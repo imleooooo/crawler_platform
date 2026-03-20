@@ -90,6 +90,10 @@ async fn main() {
         });
     let queue_service = QueueService::new(redis_pool);
 
+    // Create shutdown channel before AppState so the receiver can be shared
+    // with both the worker task and request handlers.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     let state = AppState {
         s3_client,
         s3_client_public,
@@ -99,10 +103,9 @@ async fn main() {
         google_cx: cfg.google_cx,
         api_key: cfg.api_key,
         openai_api_key: cfg.openai_api_key,
+        shutdown_rx: shutdown_rx.clone(),
     };
 
-    // Spawn Worker with a shutdown channel so main can coordinate clean exit
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let worker_state = state.clone();
     let worker_handle = tokio::spawn(async move {
         worker::run_worker(worker_state, shutdown_rx).await;
