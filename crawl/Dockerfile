@@ -1,20 +1,21 @@
 # ── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM rust:1.85-slim-bookworm AS builder
+# Use the same Python minor version as the runtime stage so maturin produces
+# a cp312 wheel that is installable into Python 3.12.
+FROM python:3.12-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    python3-dev \
+    curl \
     git \
     pkg-config \
     libssl-dev \
     patchelf \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/opt/venv/bin:$PATH"
-RUN python3 -m venv /opt/venv
-RUN pip3 install maturin
+# Install Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.0
+ENV PATH="/root/.cargo/bin:$PATH"
+
+RUN pip install --no-cache-dir maturin
 
 WORKDIR /crawl
 COPY . .
