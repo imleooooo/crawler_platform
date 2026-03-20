@@ -5,17 +5,32 @@ use std::time::SystemTime;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-/// Return scheme+host+path only, stripping query strings and fragments so that
-/// signed or token-bearing URLs do not appear in logs.
+/// Strip query strings and fragments from a URL so that signed or token-bearing
+/// parameters do not appear in logs, while keeping scheme, host, port, and path
+/// for operator recovery.
 fn sanitize_url_for_log(raw: &str) -> String {
     match url::Url::parse(raw) {
-        Ok(u) => format!(
-            "{}://{}{}",
-            u.scheme(),
-            u.host_str().unwrap_or("?"),
-            u.path()
-        ),
-        Err(_) => "[unparseable]".to_string(),
+        Ok(u) => {
+            // Include explicit non-default ports (port() returns None for defaults).
+            let host_part = match (u.host_str(), u.port()) {
+                (Some(h), Some(p)) => format!("{}:{}", h, p),
+                (Some(h), None) => h.to_string(),
+                _ => "?".to_string(),
+            };
+            format!("{}://{}{}", u.scheme(), host_part, u.path())
+        }
+        Err(_) => {
+            // Best-effort strip on the raw string: truncate at the first '?' or
+            // '#' so the task remains reconstructible even for scheme-less or
+            // otherwise unparseable URLs.
+            let cut = match (raw.find('?'), raw.find('#')) {
+                (Some(q), Some(f)) => q.min(f),
+                (Some(q), None) => q,
+                (None, Some(f)) => f,
+                (None, None) => raw.len(),
+            };
+            raw[..cut].to_string()
+        }
     }
 }
 
