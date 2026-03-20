@@ -5,6 +5,20 @@ use std::time::SystemTime;
 use tokio::sync::watch;
 use uuid::Uuid;
 
+/// Return scheme+host+path only, stripping query strings and fragments so that
+/// signed or token-bearing URLs do not appear in logs.
+fn sanitize_url_for_log(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(u) => format!(
+            "{}://{}{}",
+            u.scheme(),
+            u.host_str().unwrap_or("?"),
+            u.path()
+        ),
+        Err(_) => "[unparseable]".to_string(),
+    }
+}
+
 pub async fn run_worker(state: AppState, shutdown: watch::Receiver<bool>) {
     tracing::info!("Worker started");
     loop {
@@ -27,12 +41,16 @@ pub async fn run_worker(state: AppState, shutdown: watch::Receiver<bool>) {
                     );
                     if let Err(e) = state.queue_service.enqueue(task.clone()).await {
                         // The task is already removed from Redis and could not be
-                        // re-enqueued. Log only non-sensitive identifiers so an
-                        // operator can recover it without leaking api_key/prompt.
+                        // re-enqueued. Log sanitized identifiers (query strings
+                        // stripped) so an operator can recover it without leaking
+                        // credentials embedded in signed or token-bearing URLs.
+                        let sanitized_urls: Vec<String> =
+                            task.urls.iter().map(|u| sanitize_url_for_log(u)).collect();
                         tracing::error!(
-                            urls = ?task.urls,
+                            urls = ?sanitized_urls,
                             bucket = ?task.bucket_name,
                             run_mode = ?task.run_mode,
+                            ignore_links = ?task.ignore_links,
                             "Failed to re-enqueue task during shutdown — log above fields for manual recovery: {}",
                             e
                         );
