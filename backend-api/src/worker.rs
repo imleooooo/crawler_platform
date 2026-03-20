@@ -20,16 +20,11 @@ fn sanitize_url_for_log(raw: &str) -> String {
             format!("{}://{}{}", u.scheme(), host_part, u.path())
         }
         Err(_) => {
-            // Best-effort strip on the raw string: truncate at the first '?' or
-            // '#' so the task remains reconstructible even for scheme-less or
-            // otherwise unparseable URLs.
-            let cut = match (raw.find('?'), raw.find('#')) {
-                (Some(q), Some(f)) => q.min(f),
-                (Some(q), None) => q,
-                (None, Some(f)) => f,
-                (None, None) => raw.len(),
-            };
-            raw[..cut].to_string()
+            // Do not log the raw string — it may contain credentials in the
+            // authority or path (e.g. user:pass@host/token/path). Log only the
+            // byte length so the Vec entry is distinguishable without exposure.
+            // Operators can recover the full URL from their original request logs.
+            format!("[unparseable: {} bytes]", raw.len())
         }
     }
 }
