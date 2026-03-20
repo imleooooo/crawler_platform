@@ -314,24 +314,28 @@ pub async fn batch_crawl(
         })));
     }
 
-    // Reject new async work during shutdown: the worker has already been
-    // signalled to stop dequeuing, so any task enqueued now would be orphaned
-    // in Redis until the next restart.
-    if *state.shutdown_rx.borrow() {
+    // Hold the enqueue gate for the entire check-then-enqueue sequence.
+    // shutdown_signal closes this gate (under the same lock) before signalling
+    // the worker, so the check and enqueue are atomic with respect to shutdown.
+    let gate = state.enqueue_gate.lock().await;
+    if !*gate {
         return Err((
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "Server is shutting down, please retry".to_string(),
         ));
     }
 
-    match state.queue_service.enqueue(crawl_req).await {
+    let result = state.queue_service.enqueue(crawl_req).await;
+    drop(gate); // release lock after enqueue, before shutdown_signal can close it
+
+    match result {
         Ok(_) => Ok(Json(json!({
             "success": true,
             "message": "Batch crawl task submitted to queue",
             "data": {
                 "urls": request.urls,
                 "status": "queued",
-                "s3_bucket": bucket_name // Return bucket name to frontend
+                "s3_bucket": bucket_name
             }
         }))),
         Err(e) => {

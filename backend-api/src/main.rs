@@ -100,9 +100,10 @@ async fn main() {
         });
     let queue_service = QueueService::new(redis_pool);
 
-    // Create shutdown channel before AppState so the receiver can be shared
-    // with both the worker task and request handlers.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // enqueue_gate: true = open. Shutdown closes this (under lock) before
+    // signalling the worker, atomically preventing new enqueues.
+    let enqueue_gate = Arc::new(tokio::sync::Mutex::new(true));
 
     let state = AppState {
         s3_client,
@@ -113,7 +114,7 @@ async fn main() {
         google_cx: cfg.google_cx,
         api_key: cfg.api_key,
         openai_api_key: cfg.openai_api_key,
-        shutdown_rx: shutdown_rx.clone(),
+        enqueue_gate: enqueue_gate.clone(),
     };
 
     let worker_state = state.clone();
@@ -216,7 +217,7 @@ async fn main() {
         std::process::exit(1);
     });
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx, enqueue_gate))
         .await
         .unwrap_or_else(|e| {
             eprintln!("FATAL: Server error: {}", e);
@@ -230,7 +231,10 @@ async fn main() {
     }
 }
 
-async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
+async fn shutdown_signal(
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    enqueue_gate: Arc<tokio::sync::Mutex<bool>>,
+) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -253,9 +257,15 @@ async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
         _ = terminate => {},
     }
 
-    // Signal the worker immediately so it stops dequeuing new tasks.
-    // The worker finishes its current task before exiting; main awaits it
-    // after HTTP connections are drained.
+    // Close the enqueue gate while holding the lock, then signal the worker.
+    // Any in-flight check-then-enqueue holds the same lock, so closing the gate
+    // here is atomic with respect to new enqueues: either the handler already
+    // holds the lock (and will complete its enqueue before we proceed), or we
+    // close it first and the handler will see false and return 503.
+    {
+        let mut gate = enqueue_gate.lock().await;
+        *gate = false;
+    }
     let _ = shutdown_tx.send(true);
     tracing::info!("shutdown signal received, draining in-flight requests");
 }
