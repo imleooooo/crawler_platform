@@ -30,6 +30,8 @@ services:
       - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}
       - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY}
       - RUSTFS_ENDPOINT=http://rustfs:9000
+      - RUSTFS_PUBLIC_ENDPOINT=${RUSTFS_PUBLIC_ENDPOINT}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
 
   postgres:
     image: postgres:15
