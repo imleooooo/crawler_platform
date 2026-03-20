@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     patchelf \
+    gcc \
+    libc-dev \
+    make \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust toolchain
