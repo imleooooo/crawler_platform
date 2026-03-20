@@ -28,6 +28,20 @@ impl QueueService {
         Ok(())
     }
 
+    /// Check Redis connectivity by issuing a PING command.
+    pub async fn ping(&self) -> Result<(), String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Redis pool error: {}", e))?;
+        let _: String = redis::cmd("PING")
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| format!("Redis PING error: {}", e))?;
+        Ok(())
+    }
+
     /// Block and wait for a task from the head of the queue (timeout in seconds)
     pub async fn dequeue(&self, timeout: f64) -> Result<Option<CrawlerRequest>, String> {
         let mut conn = self

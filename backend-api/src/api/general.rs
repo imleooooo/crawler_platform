@@ -6,8 +6,33 @@ pub async fn root() -> Json<Value> {
     Json(json!({"Hello": "World from Backend API (Rust)"}))
 }
 
-pub async fn healthz() -> (StatusCode, Json<Value>) {
-    (StatusCode::OK, Json(json!({"status": "ok"})))
+pub async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let timeout = std::time::Duration::from_secs(3);
+
+    let redis_result = tokio::time::timeout(timeout, state.queue_service.ping()).await;
+    let redis_ok = matches!(redis_result, Ok(Ok(())));
+
+    let s3_result =
+        tokio::time::timeout(timeout, state.s3_client.list_buckets().send()).await;
+    let s3_ok = matches!(s3_result, Ok(Ok(_)));
+
+    let all_ok = redis_ok && s3_ok;
+    let http_status = if all_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        http_status,
+        Json(json!({
+            "status": if all_ok { "ok" } else { "degraded" },
+            "dependencies": {
+                "redis": if redis_ok { "ok" } else { "error" },
+                "s3": if s3_ok { "ok" } else { "error" },
+            }
+        })),
+    )
 }
 
 pub async fn get_metrics(State(state): State<AppState>) -> Json<Value> {
