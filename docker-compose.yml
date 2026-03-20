@@ -21,20 +21,20 @@ services:
       - postgres
       - redis
     environment:
-      - DATABASE_URL=postgresql://user:password@postgres:5432/dbname
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GOOGLE_CX=${GOOGLE_CX}
-      - RUSTFS_ACCESS_KEY=rustfsadmin
-      - RUSTFS_SECRET_KEY=rustfsadmin
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY}
       - RUSTFS_ENDPOINT=http://rustfs:9000
 
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: dbname
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -53,8 +53,8 @@ services:
     volumes:
       - rustfs_data:/data/rustfs0
     environment:
-      - RUSTFS_ACCESS_KEY=rustfsadmin
-      - RUSTFS_SECRET_KEY=rustfsadmin
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY}
 
 volumes:
   postgres_data:

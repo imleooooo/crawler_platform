@@ -4,9 +4,9 @@ use std::error::Error;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let access_key = "admin";
-    let secret_key = "password";
-    let endpoint = "http://127.0.0.1:9000";
+    let access_key = std::env::var("RUSTFS_ACCESS_KEY").expect("RUSTFS_ACCESS_KEY must be set");
+    let secret_key = std::env::var("RUSTFS_SECRET_KEY").expect("RUSTFS_SECRET_KEY must be set");
+    let endpoint = std::env::var("RUSTFS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:9000".to_string());
     let region = "us-east-1"; // Region is often ignored but required by SDK
 
     println!("Connecting to RustFS at {}...", endpoint);

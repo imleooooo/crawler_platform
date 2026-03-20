@@ -29,12 +29,10 @@ RUN mkdir -p /var/log/rustfs /data/rustfs0 && \
 
 USER rustfs
 
-# Environment variables
+# Environment variables (credentials must be provided at runtime via env vars)
 ENV RUSTFS_PORT=9000 \
     RUSTFS_CONSOLE_PORT=9001 \
     RUSTFS_VOLUMES="/data/rustfs0" \
-    RUSTFS_ACCESS_KEY="rustfsadmin" \
-    RUSTFS_SECRET_KEY="rustfsadmin" \
     RUSTFS_ADDRESS=":9000" \
     RUSTFS_CONSOLE_ADDRESS=":9001" \
     RUSTFS_CONSOLE_ENABLE="true" \
