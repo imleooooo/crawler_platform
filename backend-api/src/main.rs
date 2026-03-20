@@ -118,9 +118,13 @@ async fn main() {
         enqueue_gate: enqueue_gate.clone(),
     };
 
+    // false = idle (initial), true = actively processing a crawl job.
+    // main() watches this to avoid force-killing an in-progress task during shutdown.
+    let (worker_busy_tx, worker_busy_rx) = tokio::sync::watch::channel(false);
+
     let worker_state = state.clone();
     let worker_handle = tokio::spawn(async move {
-        worker::run_worker(worker_state, shutdown_rx).await;
+        worker::run_worker(worker_state, shutdown_rx, worker_busy_tx).await;
     });
 
     // CORS: restrict to explicitly configured origins only
@@ -215,16 +219,36 @@ async fn main() {
             std::process::exit(1);
         });
 
-    // HTTP connections are fully drained; worker already received the shutdown
-    // signal at signal time — wait for any in-progress task to complete, but
-    // enforce a hard deadline so a stuck crawl cannot block a deployment forever.
-    const WORKER_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-    match tokio::time::timeout(WORKER_SHUTDOWN_TIMEOUT, worker_handle).await {
+    // Two-phase worker drain:
+    //
+    // Phase 1 — wait for any in-progress crawl to finish (no hard cap).
+    //   The job was already dequeued from Redis so aborting it here would
+    //   silently lose it. Crawl-level timeouts (HTTP 60s, browser 30s) bound
+    //   how long this can take in practice.
+    //
+    // Phase 2 — once the worker is idle it will pick up the shutdown signal on
+    //   its next loop iteration (within one 5s dequeue poll). Give a short fixed
+    //   window before giving up and letting the runtime drop the task.
+    let mut busy_rx = worker_busy_rx;
+    if *busy_rx.borrow() {
+        tracing::info!("Waiting for in-progress crawl job to complete before shutdown");
+        loop {
+            if busy_rx.changed().await.is_err() {
+                break; // sender dropped — worker exited or panicked
+            }
+            if !*busy_rx.borrow() {
+                break; // worker became idle
+            }
+        }
+    }
+
+    const IDLE_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    match tokio::time::timeout(IDLE_EXIT_TIMEOUT, worker_handle).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::error!("Worker task panicked: {:?}", e),
         Err(_) => tracing::error!(
-            "Worker did not finish within {}s shutdown window; forcing exit",
-            WORKER_SHUTDOWN_TIMEOUT.as_secs()
+            "Worker did not exit within {}s after becoming idle; forcing shutdown",
+            IDLE_EXIT_TIMEOUT.as_secs()
         ),
     }
 }

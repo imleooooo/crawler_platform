@@ -69,7 +69,13 @@ fn sanitize_url_for_log(raw: &str) -> String {
     }
 }
 
-pub async fn run_worker(state: AppState, shutdown: watch::Receiver<bool>) {
+/// `busy_tx`: sends `true` while a crawl job is in progress, `false` when idle.
+/// main() watches this to avoid killing an active job during shutdown.
+pub async fn run_worker(
+    state: AppState,
+    shutdown: watch::Receiver<bool>,
+    busy_tx: watch::Sender<bool>,
+) {
     tracing::info!("Worker started");
     loop {
         // Check for shutdown before dequeuing the next task.
@@ -117,8 +123,15 @@ pub async fn run_worker(state: AppState, shutdown: watch::Receiver<bool>) {
                     }
                 }
 
+                // Signal busy so main() knows not to force-exit during this crawl.
+                let _ = busy_tx.send(true);
+
                 // Execute Crawl
                 let result = crawler::call_crawler_service(&task).await;
+
+                // Job complete — signal idle before saving results so the shutdown
+                // window starts as soon as the crawl finishes, not after S3 writes.
+                let _ = busy_tx.send(false);
 
                 // Metrics cleanup
                 {
