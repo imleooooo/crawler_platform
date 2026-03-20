@@ -21,13 +21,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let text = resp.text().await?;
     let data: Value = serde_json::from_str(&text)?;
 
-    let results = data["results"].as_array().unwrap();
+    let results = data["results"]
+        .as_array()
+        .ok_or("Missing 'results' array in iTunes response")?;
     if results.is_empty() {
         println!("No podcasts found on iTunes.");
         return Ok(());
     }
 
-    let feed_url = results[0]["feedUrl"].as_str().unwrap();
+    let feed_url = results[0]["feedUrl"]
+        .as_str()
+        .ok_or("Missing 'feedUrl' in first iTunes result")?;
     println!("Found Feed URL: {}", feed_url);
 
     // 2. Parse Feed

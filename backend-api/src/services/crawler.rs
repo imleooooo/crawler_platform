@@ -145,9 +145,11 @@ async fn call_openai_api(
     }
 
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let content = body["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or("Failed to parse OpenAI response content")?
+    let content = body["choices"]
+        .as_array()
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice["message"]["content"].as_str())
+        .ok_or("Failed to parse OpenAI response content: choices array is empty or missing")?
         .to_string();
 
     Ok(content)

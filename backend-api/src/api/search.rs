@@ -205,11 +205,12 @@ async fn search_logic(
     }
 
     // Update active workers
-    {
-        if let Ok(mut metrics) = state.metrics.lock() {
-            metrics.active_workers += unique_urls.len();
-        }
-    }
+    let incremented = if let Ok(mut metrics) = state.metrics.lock() {
+        metrics.active_workers += unique_urls.len();
+        true
+    } else {
+        false
+    };
 
     // 3. Call Crawler Service
     let crawl_res = crawler::call_crawler_service(&crawler::CrawlerRequest {
@@ -224,14 +225,10 @@ async fn search_logic(
     })
     .await;
 
-    // Decrement workers
-    {
+    // Decrement workers only if we successfully incremented
+    if incremented {
         if let Ok(mut metrics) = state.metrics.lock() {
-            if metrics.active_workers >= unique_urls.len() {
-                metrics.active_workers -= unique_urls.len();
-            } else {
-                metrics.active_workers = 0;
-            }
+            metrics.active_workers = metrics.active_workers.saturating_sub(unique_urls.len());
         }
     }
 

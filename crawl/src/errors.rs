@@ -12,7 +12,7 @@ pub enum CrawlError {
     Timeout(String),
     #[error("Javascript execution error: {0}")]
     JsError(String),
-    #[error("Screnshot error: {0}")]
+    #[error("Screenshot error: {0}")]
     ScreenshotError(String),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),

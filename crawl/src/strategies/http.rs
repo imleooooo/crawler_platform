@@ -21,7 +21,7 @@ impl HttpCrawler {
                     "Mozilla/5.0 (compatible; LabCrawl/1.0; +https://github.com/example/lab-crawl)",
                 )
                 .build()
-                .unwrap_or_default(),
+                .expect("Failed to build HTTP client"),
         }
     }
 

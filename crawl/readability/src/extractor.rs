@@ -62,7 +62,7 @@ where
         Default::default(),
     )
     .ok();
-    let content = String::from_utf8(bytes).unwrap_or_default();
+    let content = String::from_utf8_lossy(&bytes).into_owned();
 
     let mut text: String = String::new();
     dom::extract_text(node.clone(), &mut text, true);
