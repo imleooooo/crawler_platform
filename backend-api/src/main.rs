@@ -13,6 +13,7 @@ use tower_http::trace::TraceLayer;
 
 mod api;
 mod config;
+mod middleware;
 mod services;
 mod state;
 mod worker;
@@ -86,6 +87,7 @@ async fn main() {
         queue_service,
         google_api_key: cfg.google_api_key,
         google_cx: cfg.google_cx,
+        api_key: cfg.api_key,
     };
 
     // Spawn Worker
@@ -113,20 +115,24 @@ async fn main() {
             axum::http::header::AUTHORIZATION,
         ]);
 
-    let app = Router::new()
-        .route("/", get(api::general::root))
+    let protected = Router::new()
         .route("/api/metrics", get(api::general::get_metrics))
         .route("/api/search-aggregate", post(api::search::search_aggregate))
         .route("/api/arxiv-search", post(api::arxiv::arxiv_search))
         .route("/api/podcast-search", post(api::podcast::podcast_search))
-        .route(
-            "/api/ai-exploration",
-            post(api::exploration::ai_exploration),
-        )
+        .route("/api/ai-exploration", post(api::exploration::ai_exploration))
         .route("/api/agent-crawl", post(api::crawl::agent_crawl))
         .route("/api/batch-crawl", post(api::crawl::batch_crawl))
         .route("/api/storage-stats", get(api::storage::storage_stats))
         .route("/api/storage/delete", post(api::storage::delete_task_data))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::require_api_key,
+        ));
+
+    let app = Router::new()
+        .route("/", get(api::general::root))
+        .merge(protected)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

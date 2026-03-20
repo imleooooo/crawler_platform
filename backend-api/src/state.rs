@@ -11,6 +11,7 @@ pub struct AppState {
     pub queue_service: QueueService,
     pub google_api_key: String,
     pub google_cx: String,
+    pub api_key: String,
 }
 
 pub struct MetricsState {
