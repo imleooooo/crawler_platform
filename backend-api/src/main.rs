@@ -156,7 +156,11 @@ async fn main() {
             eprintln!("FATAL: PORT env var '{}' is not a valid port number", v);
             std::process::exit(1);
         }),
-        Err(_) => 8000,
+        Err(std::env::VarError::NotPresent) => 8000,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!("FATAL: PORT env var contains invalid Unicode");
+            std::process::exit(1);
+        }
     };
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("listening on {}", addr);
@@ -165,22 +169,21 @@ async fn main() {
         std::process::exit(1);
     });
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await
         .unwrap_or_else(|e| {
             eprintln!("FATAL: Server error: {}", e);
             std::process::exit(1);
         });
 
-    // HTTP connections are fully drained — now signal the worker to stop
-    // and wait for any in-progress task to complete before exiting.
-    let _ = shutdown_tx.send(true);
+    // HTTP connections are fully drained; worker already received the shutdown
+    // signal at signal time — wait for any in-progress task to complete.
     if let Err(e) = worker_handle.await {
         tracing::error!("Worker task panicked: {:?}", e);
     }
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -203,5 +206,9 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
+    // Signal the worker immediately so it stops dequeuing new tasks.
+    // The worker finishes its current task before exiting; main awaits it
+    // after HTTP connections are drained.
+    let _ = shutdown_tx.send(true);
     tracing::info!("shutdown signal received, draining in-flight requests");
 }
