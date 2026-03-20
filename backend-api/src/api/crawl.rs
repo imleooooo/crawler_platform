@@ -314,19 +314,25 @@ pub async fn batch_crawl(
         })));
     }
 
-    // Hold the enqueue gate for the entire check-then-enqueue sequence.
-    // shutdown_signal closes this gate (under the same lock) before signalling
-    // the worker, so the check and enqueue are atomic with respect to shutdown.
-    let gate = state.enqueue_gate.lock().await;
-    if !*gate {
-        return Err((
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "Server is shutting down, please retry".to_string(),
-        ));
-    }
+    // Check the gate under the lock, then release it before the Redis round-trip.
+    // Holding the lock across an async network call would block shutdown_signal()
+    // from closing the gate (it needs the same lock), causing Ctrl+C/SIGTERM to
+    // hang indefinitely when Redis is slow or unavailable.
+    // Trade-off: in the narrow window between dropping the lock and completing
+    // the enqueue, shutdown may close the gate, so at most one task can slip
+    // into Redis after the worker stops dequeuing. It will be picked up on next
+    // server start — acceptable vs. an unkillable process.
+    {
+        let gate = state.enqueue_gate.lock().await;
+        if !*gate {
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Server is shutting down, please retry".to_string(),
+            ));
+        }
+    } // gate lock released here, before any async I/O
 
     let result = state.queue_service.enqueue(crawl_req).await;
-    drop(gate); // release lock after enqueue, before shutdown_signal can close it
 
     match result {
         Ok(_) => Ok(Json(json!({

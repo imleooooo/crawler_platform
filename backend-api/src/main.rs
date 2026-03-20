@@ -8,7 +8,7 @@ use axum::{
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tower::ServiceBuilder;
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
@@ -156,7 +156,10 @@ async fn main() {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth::require_api_key,
-        ));
+        ))
+        // Concurrency cap on authenticated routes only: excess requests get 503 immediately
+        // without queuing. /healthz and / are excluded so health checks never stall.
+        .layer(ConcurrencyLimitLayer::new(200));
 
     let app = Router::new()
         .route("/", get(api::general::root))
@@ -184,19 +187,6 @@ async fn main() {
         )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        // Global rate limit: 200 req/s across all clients (coarse server-wide guard).
-        // HandleErrorLayer maps Buffer/RateLimit BoxError → 429 Too Many Requests.
-        .layer(
-            ServiceBuilder::new()
-                .layer(axum::error_handling::HandleErrorLayer::new(
-                    |_err: tower::BoxError| async {
-                        axum::http::StatusCode::TOO_MANY_REQUESTS
-                    },
-                ))
-                .buffer(1024)
-                .rate_limit(200, std::time::Duration::from_secs(1))
-                .into_inner(),
-        )
         .with_state(state);
 
     let port: u16 = match std::env::var("PORT") {

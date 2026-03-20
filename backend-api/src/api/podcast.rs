@@ -54,6 +54,7 @@ pub async fn podcast_search(
         request.limit
     );
 
+    // metadata_client: bounded timeout for iTunes and feed lookups
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .timeout(std::time::Duration::from_secs(30))
@@ -62,6 +63,17 @@ pub async fn podcast_search(
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("HTTP client init failed: {}", e),
+            )
+        })?;
+
+    // download_client: no timeout — episode audio files can be large/slow
+    let download_client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("HTTP download client init failed: {}", e),
             )
         })?;
 
@@ -283,7 +295,7 @@ pub async fn podcast_search(
             };
 
             // Download Audio Stream
-            match client.get(&audio_url).send().await {
+            match download_client.get(&audio_url).send().await {
                 Ok(res) => {
                     if res.status().is_success() {
                         // Stream to file
