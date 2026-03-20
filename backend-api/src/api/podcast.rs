@@ -328,7 +328,22 @@ pub async fn podcast_search(
             };
 
             // Download Audio Stream
-            match download_client.get(&audio_url).send().await {
+            // connect_timeout covers TCP setup; this 30s timeout covers the
+            // header read — origins that accept the TCP connection but never
+            // return response headers would otherwise hang indefinitely.
+            const HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+            let send_result =
+                tokio::time::timeout(HEADER_TIMEOUT, download_client.get(&audio_url).send()).await;
+            let send_result = match send_result {
+                Err(_) => {
+                    result_entry.error = Some("Audio download timed out waiting for headers (30s)".to_string());
+                    results.push(result_entry);
+                    downloaded_count += 1;
+                    continue;
+                }
+                Ok(r) => r,
+            };
+            match send_result {
                 Ok(res) => {
                     if res.status().is_success() {
                         // Stream to file
@@ -391,7 +406,9 @@ pub async fn podcast_search(
                                     result_entry.local_path =
                                         Some(filepath.to_string_lossy().to_string());
                                 }
-                            } else {
+                            } else if result_entry.error.is_none() {
+                                // Only set a generic error if a more specific one
+                                // (e.g. idle timeout) hasn't already been recorded.
                                 result_entry.error = Some("Stream write failed".to_string());
                             }
                         } else {

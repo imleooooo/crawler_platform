@@ -25,8 +25,15 @@ pub async fn run_worker(state: AppState, shutdown: watch::Receiver<bool>) {
                     tracing::info!(
                         "Worker dequeued task after shutdown signal; re-enqueueing for next start"
                     );
-                    if let Err(e) = state.queue_service.enqueue(task).await {
-                        tracing::warn!("Failed to re-enqueue task during shutdown: {}", e);
+                    if let Err(e) = state.queue_service.enqueue(task.clone()).await {
+                        // The task is already removed from Redis and could not be
+                        // re-enqueued. Log the full payload at ERROR so an operator
+                        // can manually recover it rather than losing it silently.
+                        tracing::error!(
+                            task = %serde_json::to_string(&task).unwrap_or_else(|_| format!("{:?}", task.urls)),
+                            "Failed to re-enqueue task during shutdown — task payload logged for manual recovery: {}",
+                            e
+                        );
                     }
                     break;
                 }
