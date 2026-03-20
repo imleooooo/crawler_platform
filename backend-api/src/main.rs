@@ -8,6 +8,7 @@ use axum::{
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use tower::ServiceBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
@@ -80,8 +81,17 @@ async fn main() {
 
     let s3_client_public = aws_sdk_s3::Client::from_conf(s3_public_config);
 
-    // Initialize Redis Pool
-    let redis_cfg = Config::from_url(&cfg.redis_url);
+    // Initialize Redis Pool with explicit sizing and timeouts
+    let mut redis_cfg = Config::from_url(&cfg.redis_url);
+    redis_cfg.pool = Some(deadpool_redis::PoolConfig {
+        max_size: 20,
+        timeouts: deadpool_redis::Timeouts {
+            wait: Some(std::time::Duration::from_secs(5)),
+            create: Some(std::time::Duration::from_secs(5)),
+            recycle: Some(std::time::Duration::from_secs(5)),
+        },
+        queue_mode: Default::default(),
+    });
     let redis_pool = redis_cfg
         .create_pool(Some(Runtime::Tokio1))
         .unwrap_or_else(|e| {
@@ -173,6 +183,19 @@ async fn main() {
         )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+        // Global rate limit: 200 req/s across all clients (coarse server-wide guard).
+        // HandleErrorLayer maps Buffer/RateLimit BoxError → 429 Too Many Requests.
+        .layer(
+            ServiceBuilder::new()
+                .layer(axum::error_handling::HandleErrorLayer::new(
+                    |_err: tower::BoxError| async {
+                        axum::http::StatusCode::TOO_MANY_REQUESTS
+                    },
+                ))
+                .buffer(1024)
+                .rate_limit(200, std::time::Duration::from_secs(1))
+                .into_inner(),
+        )
         .with_state(state);
 
     let port: u16 = match std::env::var("PORT") {

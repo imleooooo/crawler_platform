@@ -84,7 +84,10 @@ async fn search_logic(
 
     // 2. Google Custom Search
     let mut all_urls = Vec::new();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     for keyword in &request.keywords {
         let mut fetched_count = 0;
