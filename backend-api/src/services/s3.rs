@@ -188,7 +188,7 @@ async fn put_body(
     )
     .await
     .map_err(|_| format!("S3 upload timed out after {}s", timeout.as_secs()))?
-    .map_err(|e| format!("S3 upload failed: {}", e))?;
+    .map_err(|e| format!("S3 upload failed: {:#?}", e))?;
     Ok(())
 }
 

@@ -1,5 +1,4 @@
 #![allow(clippy::collapsible_if)]
-use aws_config::BehaviorVersion;
 use axum::{
     http::HeaderValue,
     routing::{get, post},
@@ -47,7 +46,10 @@ async fn main() {
     });
 
     // Initialize S3 Client
-    let region = aws_config::Region::new("us-east-1");
+    // Build the config directly without aws_config::load_defaults to avoid:
+    //   1. IMDS probing (3-second delay on non-EC2 hosts)
+    //   2. IMDS-based credential/region probing incorrectly influencing the client
+    let region = aws_sdk_s3::config::Region::new("us-east-1");
     let credentials = aws_sdk_s3::config::Credentials::new(
         &cfg.rustfs_access_key,
         &cfg.rustfs_secret_key,
@@ -56,11 +58,8 @@ async fn main() {
         "env",
     );
 
-    // Load default SDK config (includes HTTP connector)
-    let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-
-    // Build S3-specific config overriding endpoint and credentials
-    let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
+    let s3_config = aws_sdk_s3::config::Builder::new()
+        .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
         .region(region.clone())
         .endpoint_url(&cfg.rustfs_endpoint)
         .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(
@@ -71,7 +70,8 @@ async fn main() {
 
     let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
-    let s3_public_config = aws_sdk_s3::config::Builder::from(&sdk_config)
+    let s3_public_config = aws_sdk_s3::config::Builder::new()
+        .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
         .region(region.clone())
         .endpoint_url(&cfg.rustfs_public_endpoint)
         .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(
