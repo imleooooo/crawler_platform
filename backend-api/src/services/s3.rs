@@ -8,7 +8,11 @@ use std::time::Duration;
 const S3_FILE_TIMEOUT: Duration = Duration::from_secs(300);
 
 const RETRY_ATTEMPTS: u32 = 3;
-const RETRY_BASE_MS: u64 = 500;
+// Base chosen so that the jitter ceilings (base*2^n) are at least as wide as
+// the old fixed delays [1s, 3s], preserving the bucket-propagation window:
+//   attempt 1 → rand [0, 1 500ms]  ≥ old 1s
+//   attempt 2 → rand [0, 3 000ms]  ≥ old 3s
+const RETRY_BASE_MS: u64 = 1_500;
 const RETRY_CAP_MS: u64 = 8_000;
 
 /// Full-jitter exponential backoff delay for attempt `n` (0-indexed).
