@@ -368,6 +368,10 @@ pub async fn podcast_search(
                             // origins without cutting off healthy large episodes.
                             const CHUNK_IDLE_TIMEOUT: std::time::Duration =
                                 std::time::Duration::from_secs(30);
+                            // Hard cap per episode to prevent disk/memory exhaustion
+                            // from unexpectedly large files or malicious origins.
+                            const MAX_AUDIO_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+                            let mut bytes_written: u64 = 0;
                             loop {
                                 match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, stream.next()).await
                                 {
@@ -380,6 +384,15 @@ pub async fn podcast_search(
                                     }
                                     Ok(None) => break, // stream finished normally
                                     Ok(Some(Ok(chunk))) => {
+                                        bytes_written += chunk.len() as u64;
+                                        if bytes_written > MAX_AUDIO_BYTES {
+                                            result_entry.error = Some(format!(
+                                                "Audio file too large (exceeded {} MB limit)",
+                                                MAX_AUDIO_BYTES / 1024 / 1024
+                                            ));
+                                            success = false;
+                                            break;
+                                        }
                                         if tokio::io::AsyncWriteExt::write_all(&mut f, &chunk)
                                             .await
                                             .is_err()
