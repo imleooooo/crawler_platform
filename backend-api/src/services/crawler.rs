@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CrawlerRequest {
     pub urls: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// OpenAI API key used only for in-process agent calls.
+    /// Skipped in (de)serialization so it is never written to Redis or S3.
+    #[serde(skip)]
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
@@ -18,6 +20,21 @@ pub struct CrawlerRequest {
     pub bucket_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignore_links: Option<bool>,
+}
+
+impl std::fmt::Debug for CrawlerRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrawlerRequest")
+            .field("urls", &self.urls)
+            .field("run_mode", &self.run_mode)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("prompt", &self.prompt)
+            .field("model", &self.model)
+            .field("output_dir", &self.output_dir)
+            .field("bucket_name", &self.bucket_name)
+            .field("ignore_links", &self.ignore_links)
+            .finish()
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
