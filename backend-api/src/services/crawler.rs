@@ -7,6 +7,55 @@ use std::time::{Duration, Instant};
 /// next outbound request to that domain is allowed.
 pub type DomainThrottle = Arc<Mutex<HashMap<String, Instant>>>;
 
+/// Evict entries from the throttle map once they have been idle for this long.
+const THROTTLE_EVICT_TTL: Duration = Duration::from_secs(60);
+/// Only run the eviction sweep when the map holds more than this many entries,
+/// to avoid O(n) work on every request for typical small workloads.
+const EVICT_THRESHOLD: usize = 512;
+/// Maximum number of redirects to follow for a single fetch.
+const MAX_REDIRECTS: usize = 10;
+
+/// Reserve a throttle slot for `url`'s hostname, sleeping if the previous
+/// request to that host was less than 1 s ago.
+///
+/// Slot reservation (not just "record last seen") means that N concurrent
+/// requests to the same host acquire N consecutive 1-second slots under the
+/// lock, then sleep for 0 s, 1 s, 2 s, … respectively — no thundering herd.
+///
+/// Lazy eviction runs inside the same lock acquisition whenever the map
+/// exceeds EVICT_THRESHOLD, removing entries idle for > THROTTLE_EVICT_TTL.
+async fn apply_throttle(url: &str, throttle: &DomainThrottle) {
+    let domain = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .unwrap_or_default();
+
+    if domain.is_empty() {
+        return;
+    }
+
+    let sleep_dur = {
+        let mut map = throttle.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+
+        // Lazy eviction: prune cold entries to bound memory growth.
+        if map.len() > EVICT_THRESHOLD {
+            map.retain(|_, next_avail| {
+                now.saturating_duration_since(*next_avail) < THROTTLE_EVICT_TTL
+            });
+        }
+
+        let next_avail = map.get(&domain).copied().unwrap_or(now);
+        let sleep = next_avail.saturating_duration_since(now);
+        map.insert(domain, now.max(next_avail) + Duration::from_secs(1));
+        sleep
+    };
+
+    if sleep_dur > Duration::ZERO {
+        tokio::time::sleep(sleep_dur).await;
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CrawlerRequest {
     pub urls: Vec<String>,
@@ -66,9 +115,12 @@ pub async fn call_crawler_service(
     req: &CrawlerRequest,
     throttle: DomainThrottle,
 ) -> Result<CrawlerResponse, String> {
+    // Disable automatic redirect following so fetch_and_parse() can apply the
+    // per-domain throttle at every hop instead of only at the first request.
     let client = reqwest::Client::builder()
         .user_agent("Agentic-Crawler/1.0")
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -263,31 +315,42 @@ async fn fetch_and_parse(
     ignore_links: bool,
     throttle: &DomainThrottle,
 ) -> Result<(Option<String>, Option<String>, String), String> {
-    // Per-domain politeness delay: at least 1 s between successive requests to
-    // the same host.  We reserve the next slot under a brief lock so concurrent
-    // requests to the same domain queue up correctly without racing.
-    let domain = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-        .unwrap_or_default();
+    // Manually follow redirects so the per-domain throttle is applied at every
+    // hop.  reqwest's built-in redirect following bypasses our throttle for all
+    // hops after the first (e.g. http→https, apex→www).
+    let mut current_url = url.to_string();
+    let mut hops = 0usize;
 
-    if !domain.is_empty() {
-        let sleep_dur = {
-            let mut map = throttle.lock().unwrap_or_else(|e| e.into_inner());
-            let now = Instant::now();
-            let next_avail = map.get(&domain).copied().unwrap_or(now);
-            let sleep = next_avail.saturating_duration_since(now);
-            // Advance the slot by 1 s regardless of whether we sleep, so the
-            // next concurrent request to this domain queues 1 s behind us.
-            map.insert(domain, now.max(next_avail) + Duration::from_secs(1));
-            sleep
-        };
-        if sleep_dur > Duration::ZERO {
-            tokio::time::sleep(sleep_dur).await;
+    let resp = loop {
+        apply_throttle(&current_url, throttle).await;
+
+        let resp = client
+            .get(&current_url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if resp.status().is_redirection() {
+            if hops >= MAX_REDIRECTS {
+                return Err(format!("too many redirects (> {})", MAX_REDIRECTS));
+            }
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| "redirect with no Location header".to_string())?;
+            // Resolve relative Location values against the current URL.
+            current_url = url::Url::parse(&current_url)
+                .and_then(|base| base.join(location))
+                .map_err(|e| format!("invalid redirect target: {}", e))?
+                .to_string();
+            hops += 1;
+            continue;
         }
-    }
 
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+        break resp;
+    };
+
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("HTTP {}", status));
