@@ -115,12 +115,20 @@ pub async fn call_crawler_service(
     req: &CrawlerRequest,
     throttle: DomainThrottle,
 ) -> Result<CrawlerResponse, String> {
-    // Disable automatic redirect following so fetch_and_parse() can apply the
-    // per-domain throttle at every hop instead of only at the first request.
-    let client = reqwest::Client::builder()
+    // Crawl client: redirects disabled so fetch_and_parse() can throttle every
+    // hop.  Per-hop timeout guards individual stalled requests; the outer 60 s
+    // budget in fetch_and_parse covers the whole redirect chain.
+    let crawl_client = reqwest::Client::builder()
         .user_agent("Agentic-Crawler/1.0")
         .timeout(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // Separate client for OpenAI API calls: keeps the default redirect policy
+    // so requests through proxies / load-balancers that return 3xx still work.
+    let api_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -129,16 +137,17 @@ pub async fn call_crawler_service(
 
     let results = stream::iter(urls)
         .map(|url| {
-            let client = client.clone();
+            let crawl_client = crawl_client.clone();
+            let api_client = api_client.clone();
             let req = req.clone();
             let throttle = throttle.clone();
             async move {
-                match fetch_and_parse(&client, &url, req.ignore_links.unwrap_or(false), &throttle).await {
+                match fetch_and_parse(&crawl_client, &url, req.ignore_links.unwrap_or(false), &throttle).await {
                     Ok((title, published_at, markdown)) => {
                         let final_markdown = if req.run_mode.as_deref() == Some("agent") {
                             if let (Some(prompt), Some(api_key)) = (&req.prompt, &req.api_key) {
                                 match call_openai_api(
-                                    &client,
+                                    &api_client,
                                     api_key,
                                     req.model.as_deref().unwrap_or("gpt-4o"),
                                     prompt,
@@ -318,38 +327,47 @@ async fn fetch_and_parse(
     // Manually follow redirects so the per-domain throttle is applied at every
     // hop.  reqwest's built-in redirect following bypasses our throttle for all
     // hops after the first (e.g. http→https, apex→www).
-    let mut current_url = url.to_string();
-    let mut hops = 0usize;
+    //
+    // A single 60 s deadline wraps the entire chain (throttle sleeps included)
+    // so a redirect-heavy or slow site cannot hold a worker for MAX_REDIRECTS×60s.
+    const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
-    let resp = loop {
-        apply_throttle(&current_url, throttle).await;
+    let resp = tokio::time::timeout(FETCH_TIMEOUT, async {
+        let mut current_url = url.to_string();
+        let mut hops = 0usize;
 
-        let resp = client
-            .get(&current_url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        loop {
+            apply_throttle(&current_url, throttle).await;
 
-        if resp.status().is_redirection() {
-            if hops >= MAX_REDIRECTS {
-                return Err(format!("too many redirects (> {})", MAX_REDIRECTS));
+            let resp = client
+                .get(&current_url)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+
+            if resp.status().is_redirection() {
+                if hops >= MAX_REDIRECTS {
+                    return Err(format!("too many redirects (> {})", MAX_REDIRECTS));
+                }
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| "redirect with no Location header".to_string())?;
+                // Resolve relative Location values against the current URL.
+                current_url = url::Url::parse(&current_url)
+                    .and_then(|base| base.join(location))
+                    .map_err(|e| format!("invalid redirect target: {}", e))?
+                    .to_string();
+                hops += 1;
+                continue;
             }
-            let location = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .ok_or_else(|| "redirect with no Location header".to_string())?;
-            // Resolve relative Location values against the current URL.
-            current_url = url::Url::parse(&current_url)
-                .and_then(|base| base.join(location))
-                .map_err(|e| format!("invalid redirect target: {}", e))?
-                .to_string();
-            hops += 1;
-            continue;
-        }
 
-        break resp;
-    };
+            return Ok(resp);
+        }
+    })
+    .await
+    .map_err(|_| format!("fetch timed out after {}s", FETCH_TIMEOUT.as_secs()))??;
 
     let status = resp.status();
     if !status.is_success() {
