@@ -1,10 +1,27 @@
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
+use rand::Rng;
 use std::path::Path;
 use std::time::Duration;
 
 // Generous timeout for large binary files (PDFs, audio).
 const S3_FILE_TIMEOUT: Duration = Duration::from_secs(300);
+
+const RETRY_ATTEMPTS: u32 = 3;
+const RETRY_BASE_MS: u64 = 500;
+const RETRY_CAP_MS: u64 = 8_000;
+
+/// Full-jitter exponential backoff delay for attempt `n` (0-indexed).
+///
+/// delay = rand in [0, min(cap, base * 2^n)]
+///
+/// Spreading retries randomly across the window prevents multiple instances
+/// from thundering-herd back at S3 simultaneously.
+fn retry_delay(attempt: u32) -> Duration {
+    let ceiling = RETRY_BASE_MS.saturating_mul(1u64 << attempt).min(RETRY_CAP_MS);
+    let ms = rand::thread_rng().gen_range(0..=ceiling);
+    Duration::from_millis(ms)
+}
 // Timeout for create_bucket in the confirmed-absent retry path. A stalled
 // control plane here would hang the upload permanently; if this fires we
 // proceed to put_object, which will return NoSuchBucket as a clear error.
@@ -78,9 +95,9 @@ pub async fn save_to_rustfs_content(
             // catches that window without hanging indefinitely.
             ensure_bucket(client, bucket_name).await;
             let mut last_err = String::new();
-            for delay_secs in [0u64, 1, 3] {
-                if delay_secs > 0 {
-                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+            for attempt in 0..RETRY_ATTEMPTS {
+                if attempt > 0 {
+                    tokio::time::sleep(retry_delay(attempt - 1)).await;
                 }
                 match put_content(client, bucket_name, key, content, timeout).await {
                     Ok(()) => {
@@ -118,9 +135,9 @@ pub async fn save_to_rustfs_file(
         Err(ref e) if e.contains("NoSuchBucket") => {
             ensure_bucket(client, bucket_name).await;
             let mut last_err = String::new();
-            for delay_secs in [0u64, 1, 3] {
-                if delay_secs > 0 {
-                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+            for attempt in 0..RETRY_ATTEMPTS {
+                if attempt > 0 {
+                    tokio::time::sleep(retry_delay(attempt - 1)).await;
                 }
                 let body = ByteStream::from_path(filepath)
                     .await
