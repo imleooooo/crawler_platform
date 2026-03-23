@@ -27,6 +27,9 @@ impl From<CrawlError> for PyErr {
             CrawlError::ScreenshotError(msg) => ScreenshotError::new_err(msg),
             CrawlError::IoError(e) => pyo3::exceptions::PyIOError::new_err(e.to_string()),
             CrawlError::Other(msg) => CrawlErrorPy::new_err(msg),
+            CrawlError::CloseFailedWithResult { close_error, .. } => {
+                CrawlErrorPy::new_err(format!("page.close() failed: {}", close_error))
+            }
         }
     }
 }

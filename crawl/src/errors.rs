@@ -1,3 +1,4 @@
+use crate::config::CrawlResult;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,4 +19,12 @@ pub enum CrawlError {
     IoError(#[from] std::io::Error),
     #[error("Other error: {0}")]
     Other(String),
+    /// page.close() failed after an otherwise successful crawl.
+    /// The result field carries the valid crawl data so callers can still use it,
+    /// but the browser instance should be discarded rather than returned to the pool.
+    #[error("page.close() failed after successful crawl: {close_error}")]
+    CloseFailedWithResult {
+        result: Box<CrawlResult>,
+        close_error: String,
+    },
 }

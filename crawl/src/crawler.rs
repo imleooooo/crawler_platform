@@ -70,17 +70,29 @@ impl AsyncWebCrawler {
             })
         } else {
             let manager = self.browser_pool.acquire().await?;
-            let res = manager.crawl(config.clone()).await;
-            if res.is_ok() {
-                // Healthy crawl — return browser to idle pool for reuse.
-                self.browser_pool.release(manager).await;
-            } else {
-                // Crawl failed (navigation error, timeout, close failure, etc.).
-                // Discard the instance rather than returning it to the pool;
-                // close() drops the semaphore permit so the slot is released.
-                manager.close().await;
+            match manager.crawl(config.clone()).await {
+                Ok(res) => {
+                    // Healthy crawl and clean tab close — return browser to idle pool.
+                    self.browser_pool.release(manager).await;
+                    Ok(res)
+                }
+                Err(CrawlError::CloseFailedWithResult { result, close_error }) => {
+                    // Crawl data is valid but tab close failed — discard the browser
+                    // instance so the leaked tab does not accumulate in the pool.
+                    // close() drops the semaphore permit so the concurrency slot is freed.
+                    tracing::warn!(
+                        "page.close() failed ({}); discarding browser instance",
+                        close_error
+                    );
+                    manager.close().await;
+                    Ok(*result)
+                }
+                Err(e) => {
+                    // Crawl failed — discard instance and propagate the error.
+                    manager.close().await;
+                    Err(e)
+                }
             }
-            res
         };
 
         let mut result = result?;

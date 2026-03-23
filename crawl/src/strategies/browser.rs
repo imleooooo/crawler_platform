@@ -234,14 +234,18 @@ impl BrowserManager {
 
         // Always close the tab — prevents orphaned navigations accumulating in the
         // pooled browser when a timeout fired and the inner block returned Err early.
-        // Close failures are logged but do not override a successful crawl result;
-        // the caller (AsyncWebCrawler::arun) is responsible for discarding the
-        // BrowserManager when crawl() itself returns Err.
-        if let Err(e) = page.close().await {
-            tracing::warn!("page.close() failed; tab may remain open in browser: {}", e);
+        //
+        // On close failure after a successful crawl, wrap the result in
+        // CloseFailedWithResult so the caller can both use the data and discard
+        // this browser instance instead of returning it to the idle pool.
+        match (result, page.close().await) {
+            (Ok(crawl_result), Ok(())) => Ok(crawl_result),
+            (Ok(crawl_result), Err(e)) => Err(CrawlError::CloseFailedWithResult {
+                result: Box::new(crawl_result),
+                close_error: e.to_string(),
+            }),
+            (Err(crawl_err), _) => Err(crawl_err),
         }
-
-        result
     }
 
     pub async fn close(mut self) {
