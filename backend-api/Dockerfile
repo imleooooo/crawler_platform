@@ -1,5 +1,5 @@
 # Builder stage
-FROM rust:latest AS builder
+FROM rust:1.85.0-slim-bookworm AS builder
 
 WORKDIR /usr/src/app
 COPY . .
@@ -9,10 +9,10 @@ COPY . .
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:testing-slim
+FROM debian:bookworm-slim
 
-# Install OpenSSL/Ca-certificates as they are often needed for HTTPS (reqwest)
-RUN apt-get update && apt-get install -y libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+# Install runtime OpenSSL and CA certificates (needed for HTTPS via reqwest)
+RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/src/app/target/release/backend-api /usr/local/bin/backend-api
 
