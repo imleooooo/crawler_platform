@@ -26,7 +26,7 @@ pub struct AgentCrawlRequest {
 }
 
 fn default_model() -> String {
-    "gpt-4o".to_string()
+    "gpt-5.4-mini".to_string()
 }
 
 #[derive(Deserialize)]
@@ -54,7 +54,8 @@ pub async fn agent_crawl(
     let mut target_url = request.url.clone();
 
     // Frontend sends "https://google.com" by default. If we find a specific URL in prompt, use it.
-    let url_regex = URL_REGEX.get_or_init(|| regex::Regex::new(r"https?://[^\s,]+").expect("valid regex"));
+    let url_regex =
+        URL_REGEX.get_or_init(|| regex::Regex::new(r"https?://[^\s,]+").expect("valid regex"));
     if let Some(mat) = url_regex.find(&request.prompt) {
         target_url = mat.as_str().to_string();
         tracing::info!("Extracted URL from prompt: {}", target_url);
@@ -70,7 +71,8 @@ pub async fn agent_crawl(
 
     // Metrics — incremented only after validation passes
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
@@ -92,7 +94,8 @@ pub async fn agent_crawl(
 
     // Metrics cleanup
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }
@@ -137,7 +140,11 @@ pub async fn agent_crawl(
         let mut item_val = match serde_json::to_value(item) {
             Ok(v) => v,
             Err(e) => {
-                tracing::error!("Failed to serialize agent crawl result for {}: {}", item.url, e);
+                tracing::error!(
+                    "Failed to serialize agent crawl result for {}: {}",
+                    item.url,
+                    e
+                );
                 continue;
             }
         };
@@ -186,7 +193,11 @@ pub async fn agent_crawl(
     )
     .await
     {
-        tracing::warn!("Failed to save agent results to S3 bucket {}: {}", bucket_name, e);
+        tracing::warn!(
+            "Failed to save agent results to S3 bucket {}: {}",
+            bucket_name,
+            e
+        );
     }
 
     Ok(Json(json!({"data": processed_results})))
@@ -248,17 +259,20 @@ pub async fn batch_crawl(
     if let Some(true) = request.sync {
         // Metrics update
         {
-            { let mut metrics = lock_metrics(&state.metrics);
+            {
+                let mut metrics = lock_metrics(&state.metrics);
                 metrics.queue_size += 1;
                 metrics.active_workers += 1;
             }
         }
 
-        let crawl_res = crawler::call_crawler_service(&crawl_req, state.domain_throttle.clone()).await;
+        let crawl_res =
+            crawler::call_crawler_service(&crawl_req, state.domain_throttle.clone()).await;
 
         // Metrics cleanup
         {
-            { let mut metrics = lock_metrics(&state.metrics);
+            {
+                let mut metrics = lock_metrics(&state.metrics);
                 if metrics.queue_size > 0 {
                     metrics.queue_size -= 1;
                 }
@@ -284,7 +298,11 @@ pub async fn batch_crawl(
             let mut item_val = match serde_json::to_value(item) {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!("Failed to serialize batch crawl result for {}: {}", item.url, e);
+                    tracing::error!(
+                        "Failed to serialize batch crawl result for {}: {}",
+                        item.url,
+                        e
+                    );
                     continue;
                 }
             };
@@ -330,7 +348,11 @@ pub async fn batch_crawl(
         )
         .await
         {
-            tracing::warn!("Failed to save batch results to S3 bucket {}: {}", bucket_name, e);
+            tracing::warn!(
+                "Failed to save batch results to S3 bucket {}: {}",
+                bucket_name,
+                e
+            );
         }
 
         return Ok(Json(json!({

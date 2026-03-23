@@ -41,7 +41,7 @@ impl Agent {
             .api_key
             .as_deref()
             .ok_or(CrawlError::Other("Missing API Key for Agent".to_string()))?;
-        let model = config.model.as_deref().unwrap_or("gpt-5.1"); // Default model
+        let model = config.model.as_deref().unwrap_or("gpt-5.4-mini"); // Default model
         let prompt = config.prompt.as_deref().unwrap_or("Extract content");
 
         tracing::info!("Agent started. Prompt: {}", prompt);

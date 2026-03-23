@@ -17,7 +17,7 @@ async def test_agent():
             url="https://example.com",
             run_mode="agent",
             api_key=api_key,
-            model="gpt-4o",
+            model="gpt-5.4-mini",
             prompt="Extract the main title"
         )
         print("Agent Result:", result)
@@ -40,7 +40,7 @@ if __name__ == "__main__":
             url="https://example.com", 
             run_mode="agent",
             api_key=api_key,
-            model="gpt-4o",
+            model="gpt-5.4-mini",
             prompt="Find the h1 tag"
         )
         print("Result:", result)

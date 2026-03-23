@@ -219,7 +219,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
             const response = await apiFetch('/api/agent-crawl', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: "https://google.com", prompt: agentPrompt, model: "gpt-4o", job_id: newTask.id, ignore_links: ignoreLinks }),
+                body: JSON.stringify({ url: "https://google.com", prompt: agentPrompt, model: "gpt-5.4-mini", job_id: newTask.id, ignore_links: ignoreLinks }),
             });
             clearInterval(progressInterval);
             if (!response.ok) throw new Error(`Error ${response.status}`);
@@ -608,7 +608,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
                     <textarea
                         rows="2"
                         className="w-full ios-input ios-focus-ring bg-white text-sm"
-                        placeholder="例如: /r/MachineLearning, new threads about GPT-5"
+                        placeholder="例如: /r/MachineLearning, new threads about GPT-5.4"
                         value={redditQuery}
                         onChange={(e) => setRedditQuery(e.target.value)}
                     />

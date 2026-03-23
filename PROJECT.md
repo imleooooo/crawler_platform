@@ -1,3 +1,3 @@
 ./build.sh
 
-docker compose up
+compose up --build -d

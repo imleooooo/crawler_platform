@@ -132,7 +132,7 @@ CREATE TABLE system_metrics (
 {
   "url": "https://example.com",
   "prompt": "Summarize the key points",
-  "model": "gpt-4o",
+  "model": "gpt-5.4-mini",
   "api_key": "sk-..."
 }
 ```
