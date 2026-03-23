@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 use crate::services::{s3, sanitize_bucket_name};
-use crate::state::AppState;
+use crate::state::{lock_metrics, AppState};
 
 #[derive(Deserialize)]
 pub struct PodcastRequest {
@@ -43,7 +43,7 @@ pub async fn podcast_search(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // Metrics
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
@@ -142,7 +142,7 @@ pub async fn podcast_search(
             tracing::warn!("iTunes returned 0 results");
             // Metrics cleanup
             {
-                if let Ok(mut metrics) = state.metrics.lock() {
+                { let mut metrics = lock_metrics(&state.metrics);
                     if metrics.queue_size > 0 {
                         metrics.queue_size -= 1;
                     }
@@ -464,7 +464,7 @@ pub async fn podcast_search(
 
     // Metrics cleanup
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }

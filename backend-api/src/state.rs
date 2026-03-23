@@ -1,7 +1,17 @@
 use crate::services::queue::QueueService;
 use aws_sdk_s3::Client as S3Client;
 use std::collections::VecDeque;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{atomic::AtomicBool, Arc, Mutex, MutexGuard};
+
+/// Acquire the metrics lock regardless of poison state.
+///
+/// A poisoned mutex means a thread panicked while holding it. The data inside
+/// (`MetricsState`) is plain counters with no invariants that a panic could
+/// break, so recovering the guard is safe. Silently skipping the update (the
+/// previous `if let Ok` pattern) would freeze metrics permanently instead.
+pub fn lock_metrics(m: &Mutex<MetricsState>) -> MutexGuard<'_, MetricsState> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Clone)]
 pub struct AppState {

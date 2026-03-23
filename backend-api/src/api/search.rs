@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 use crate::services::{crawler, s3, sanitize_bucket_name};
-use crate::state::AppState;
+use crate::state::{lock_metrics, AppState};
 
 #[derive(Deserialize)]
 pub struct SearchRequest {
@@ -47,7 +47,7 @@ pub async fn search_aggregate(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // 1. Metrics update
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
         }
     }
@@ -57,7 +57,7 @@ pub async fn search_aggregate(
 
     // Metric update cleanup
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }
@@ -236,12 +236,10 @@ async fn search_logic(
     }
 
     // Update active workers
-    let incremented = if let Ok(mut metrics) = state.metrics.lock() {
+    {
+        let mut metrics = lock_metrics(&state.metrics);
         metrics.active_workers += unique_urls.len();
-        true
-    } else {
-        false
-    };
+    }
 
     // 3. Call Crawler Service
     let crawl_res = crawler::call_crawler_service(&crawler::CrawlerRequest {
@@ -256,11 +254,9 @@ async fn search_logic(
     })
     .await;
 
-    // Decrement workers only if we successfully incremented
-    if incremented {
-        if let Ok(mut metrics) = state.metrics.lock() {
-            metrics.active_workers = metrics.active_workers.saturating_sub(unique_urls.len());
-        }
+    {
+        let mut metrics = lock_metrics(&state.metrics);
+        metrics.active_workers = metrics.active_workers.saturating_sub(unique_urls.len());
     }
 
     let mut aggregated_results = match crawl_res {

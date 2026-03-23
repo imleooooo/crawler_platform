@@ -1,5 +1,5 @@
 use crate::services::{crawler, s3};
-use crate::state::AppState;
+use crate::state::{lock_metrics, AppState};
 use serde_json::json;
 use std::time::SystemTime;
 use tokio::sync::watch;
@@ -118,7 +118,7 @@ pub async fn run_worker(
 
                 // Update metrics (optional / simplified)
                 {
-                    if let Ok(mut metrics) = state.metrics.lock() {
+                    { let mut metrics = lock_metrics(&state.metrics);
                         metrics.active_workers += 1;
                     }
                 }
@@ -135,7 +135,7 @@ pub async fn run_worker(
 
                 // Metrics cleanup
                 {
-                    if let Ok(mut metrics) = state.metrics.lock() {
+                    { let mut metrics = lock_metrics(&state.metrics);
                         if metrics.active_workers > 0 {
                             metrics.active_workers -= 1;
                         }

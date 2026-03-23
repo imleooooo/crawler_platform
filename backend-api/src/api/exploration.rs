@@ -10,7 +10,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::services::{crawler, s3, sanitize_bucket_name, validate_url};
-use crate::state::AppState;
+use crate::state::{lock_metrics, AppState};
 
 static LINK_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
@@ -38,7 +38,7 @@ pub async fn ai_exploration(
 
     // Metrics — incremented only after validation passes
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
@@ -210,7 +210,7 @@ pub async fn ai_exploration(
 
     // Metrics cleanup
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use futures::stream::{self, StreamExt};
 
 use crate::services::{crawler, s3, sanitize_bucket_name, validate_url};
-use crate::state::AppState;
+use crate::state::{lock_metrics, AppState};
 
 static URL_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
@@ -70,7 +70,7 @@ pub async fn agent_crawl(
 
     // Metrics — incremented only after validation passes
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
@@ -92,7 +92,7 @@ pub async fn agent_crawl(
 
     // Metrics cleanup
     {
-        if let Ok(mut metrics) = state.metrics.lock() {
+        { let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }
@@ -248,7 +248,7 @@ pub async fn batch_crawl(
     if let Some(true) = request.sync {
         // Metrics update
         {
-            if let Ok(mut metrics) = state.metrics.lock() {
+            { let mut metrics = lock_metrics(&state.metrics);
                 metrics.queue_size += 1;
                 metrics.active_workers += 1;
             }
@@ -258,7 +258,7 @@ pub async fn batch_crawl(
 
         // Metrics cleanup
         {
-            if let Ok(mut metrics) = state.metrics.lock() {
+            { let mut metrics = lock_metrics(&state.metrics);
                 if metrics.queue_size > 0 {
                     metrics.queue_size -= 1;
                 }
