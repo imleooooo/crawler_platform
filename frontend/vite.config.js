@@ -1,14 +1,15 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   // loadEnv reads .env, .env.local, .env.<mode>, etc. from the project root.
   // The third argument '' makes it load ALL variables, not only VITE_* ones,
   // so API_KEY (no VITE_ prefix, never exposed to the browser) is available.
-  // Resolve to the repo root (one level above frontend/) so the top-level .env
-  // is found regardless of where `vite` is invoked from.
-  const repoRoot = new URL('..', import.meta.url).pathname
+  // fileURLToPath converts the file: URL to a native OS path (handles Windows
+  // drive letters and percent-encoded characters that .pathname would not).
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url))
   const env = loadEnv(mode, repoRoot, '')
 
   return {
