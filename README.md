@@ -434,58 +434,71 @@ GET /api/storage-stats
 
 ### 環境變數設定（`.env`）
 
+在專案根目錄（與 `docker-compose.yml` 同層）建立 `.env`：
+
 ```env
+# API 存取金鑰（自訂任意字串；前端透過 nginx/Vite proxy 傳遞，不會暴露於 bundle）
+API_KEY=your-secret-key
+
+# OpenAI（Agent 模式必填）
+OPENAI_API_KEY=sk-...
+
 # Google Custom Search
 GOOGLE_API_KEY=AIzaSy...
 GOOGLE_CX=378c5563679a...
 
-# 資料庫
-DATABASE_URL=postgresql://user:password@postgres:5432/dbname
-
-# Redis
-REDIS_URL=redis://redis:6379/0
-
 # RustFS（S3 相容儲存）
-RUSTFS_ENDPOINT=http://rustfs:9000
-RUSTFS_PUBLIC_ENDPOINT=http://localhost:9000
 RUSTFS_ACCESS_KEY=rustfsadmin
 RUSTFS_SECRET_KEY=rustfsadmin
+RUSTFS_ENDPOINT=http://rustfs:9000
+RUSTFS_PUBLIC_ENDPOINT=http://localhost:9000
+
+# CORS（前端 origin，多個以逗號分隔）
+ALLOWED_ORIGINS=http://localhost:5173
 ```
 
 ### 啟動服務
 
 ```bash
-# 完整建構（Docker images + Python wheels）
-./build.sh
+# 1. 建構所有 Docker images
+docker compose build
 
-# 啟動所有服務
-docker-compose up
+# 2. 啟動所有服務
+docker compose up -d
 
-# 僅啟動後端服務（不含前端）
-docker-compose up backend-api redis rustfs
+# 僅啟動後端（不含前端）
+docker compose up -d backend-api redis rustfs
 ```
 
 ### 服務端口
 
 | 服務 | 端口 |
 |------|------|
-| Frontend | `http://localhost:5173` |
+| Frontend (nginx) | `http://localhost:5173` |
 | Backend API | `http://localhost:8000` |
 | RustFS API | `http://localhost:9000` |
 | RustFS Console | `http://localhost:9001` |
 | Redis | `localhost:6379` |
-| PostgreSQL | `localhost:5432` |
 
 ### Docker Compose 服務結構
 
 ```yaml
 services:
-  frontend:    # React dev server
+  frontend:    # React + nginx（反向代理 /api/*，注入 Bearer token）
   backend-api: # Rust/Axum REST API
-  postgres:    # PostgreSQL 15
   redis:       # Redis Alpine（任務佇列）
   rustfs:      # S3 相容物件儲存
 ```
+
+### 認證架構
+
+所有 `/api/*` 路由均需 `Authorization: Bearer <API_KEY>`。Bearer token 由基礎設施層注入，**不會出現在前端 JS bundle**：
+
+```
+瀏覽器 → nginx（注入 Authorization header）→ backend-api
+```
+
+**本地開發（`npm run dev`）**：Vite `server.proxy` 讀取 `.env` 中的 `API_KEY` 並在 Node.js 側注入，行為與 nginx 相同。
 
 ---
 
@@ -510,7 +523,7 @@ services:
 | 前端儀表板 | 完成 |
 | 即時指標監控 | 完成 |
 | PostgreSQL 資料庫整合 | 設計完成，待實作 |
-| 身份驗證 / 授權 | 待規劃 |
+| API Bearer Token 身份驗證 | 完成 |
 
 ### 效能目標
 
@@ -546,7 +559,6 @@ s3://bucket-name/
 ### 當前限制
 
 1. **資料庫持久化**：任務歷史目前靠前端 LocalStorage 儲存，後端無持久化；PostgreSQL schema 已設計完成，但尚未整合至 API
-2. **無身份驗證**：API 端點完全開放，缺乏 API Key 或 JWT 認證機制
 3. **Agent 模式穩定性**：複雜互動場景下 LLM 推理準確率有待提升
 4. **Worker 錯誤恢復**：Worker 崩潰後任務可能遺失，缺乏 Dead Letter Queue
 5. **資源限制**：瀏覽器實例數量固定，尚無動態擴縮容機制
@@ -556,7 +568,7 @@ s3://bucket-name/
 | 優先級 | 功能 |
 |--------|------|
 | 高 | PostgreSQL 整合，實現完整任務生命週期管理 |
-| 高 | API 身份驗證（JWT / API Key） |
+| 中 | JWT 身份驗證（多用戶支援） |
 | 中 | Dead Letter Queue 與失敗任務重試機制 |
 | 中 | Webhook 通知（任務完成時推送） |
 | 中 | 動態 Browser Pool 擴縮容 |
