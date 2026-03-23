@@ -48,14 +48,6 @@ pub async fn agent_crawl(
     State(state): State<AppState>,
     Json(request): Json<AgentCrawlRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    // Metrics
-    {
-        if let Ok(mut metrics) = state.metrics.lock() {
-            metrics.queue_size += 1;
-            metrics.active_workers += 1;
-        }
-    }
-
     // Extract URL from prompt if present, to override default/hardcoded URL
     let mut target_url = request.url.clone();
 
@@ -69,9 +61,17 @@ pub async fn agent_crawl(
     // Save prompt for later use in JSON (before it's moved)
     let prompt_for_json = request.prompt.clone();
 
-    // Validate the resolved URL before handing it to the crawler
-    if let Err(e) = validate_url(&target_url) {
+    // Validate before touching metrics so an invalid URL never inflates counters.
+    if let Err(e) = validate_url(&target_url).await {
         return Err((axum::http::StatusCode::UNPROCESSABLE_ENTITY, e));
+    }
+
+    // Metrics — incremented only after validation passes
+    {
+        if let Ok(mut metrics) = state.metrics.lock() {
+            metrics.queue_size += 1;
+            metrics.active_workers += 1;
+        }
     }
 
     // Call Crawler with agent mode
@@ -196,11 +196,12 @@ pub async fn batch_crawl(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // Validate all URLs before any processing so we don't enqueue or partially
     // execute a request that contains a disallowed target.
-    let invalid: Vec<String> = request
-        .urls
-        .iter()
-        .filter_map(|u| validate_url(u).err().map(|e| e))
-        .collect();
+    let mut invalid = Vec::new();
+    for u in &request.urls {
+        if let Err(e) = validate_url(u).await {
+            invalid.push(e);
+        }
+    }
     if !invalid.is_empty() {
         return Err((
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,

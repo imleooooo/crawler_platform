@@ -9,14 +9,17 @@ pub use s3::sanitize_bucket_name;
 ///
 /// Rejects:
 /// - Non-http/https schemes (file://, ftp://, etc.)
-/// - Loopback addresses (localhost, 127.0.0.1, ::1)
-/// - Private / link-local / unspecified IPv4 and IPv6 ranges
+/// - Hostnames or literal IPs that resolve to loopback, private, link-local,
+///   unique-local, or unspecified ranges (IPv4 and IPv6).
 ///
-/// Returns the parsed `url::Url` on success so callers can use it without
-/// re-parsing.
-pub fn validate_url(raw: &str) -> Result<url::Url, String> {
-    let url =
-        url::Url::parse(raw).map_err(|e| format!("Invalid URL '{}': {}", raw, e))?;
+/// DNS resolution is performed so that attacker-controlled hostnames that
+/// point to internal addresses are caught. Note that DNS rebinding can still
+/// bypass this check after validation; this check is a defence-in-depth
+/// measure, not a complete SSRF prevention strategy.
+///
+/// Returns the parsed `url::Url` on success.
+pub async fn validate_url(raw: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(raw).map_err(|e| format!("Invalid URL '{}': {}", raw, e))?;
 
     match url.scheme() {
         "http" | "https" => {}
@@ -32,19 +35,35 @@ pub fn validate_url(raw: &str) -> Result<url::Url, String> {
         .host_str()
         .ok_or_else(|| format!("URL '{}' has no host", raw))?;
 
-    // Block bare "localhost" (covers both IPv4 and IPv6 loopback via name)
-    if host.eq_ignore_ascii_case("localhost") {
-        return Err(format!("Requests to '{}' are not allowed", host));
-    }
-
-    // Parse the host as an IP address; reject private / reserved ranges
-    // (strip surrounding brackets from IPv6 literals first)
+    // Check literal IP addresses first (no DNS needed)
     let ip_str = host.trim_matches(|c| c == '[' || c == ']');
     if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
         if is_ssrf_ip(ip) {
             return Err(format!(
                 "Requests to private or reserved address '{}' are not allowed",
                 ip
+            ));
+        }
+        // Literal IP is public — no DNS needed
+        return Ok(url);
+    }
+
+    // Hostname: resolve via DNS and check every returned address.
+    // A 5s cap prevents a slow/unresponsive resolver from blocking the request.
+    let lookup_addr = format!("{}:80", host);
+    let addrs = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::lookup_host(&lookup_addr),
+    )
+    .await
+    .map_err(|_| format!("DNS lookup for '{}' timed out", host))?
+    .map_err(|e| format!("Could not resolve host '{}': {}", host, e))?;
+
+    for addr in addrs {
+        if is_ssrf_ip(addr.ip()) {
+            return Err(format!(
+                "Host '{}' resolves to a private or reserved address and is not allowed",
+                host
             ));
         }
     }
@@ -55,15 +74,19 @@ pub fn validate_url(raw: &str) -> Result<url::Url, String> {
 fn is_ssrf_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
-            v4.is_loopback()       // 127.0.0.0/8
-                || v4.is_private() // 10/8, 172.16/12, 192.168/16
+            v4.is_loopback()          // 127.0.0.0/8
+                || v4.is_private()    // 10/8, 172.16/12, 192.168/16
                 || v4.is_link_local() // 169.254/16
                 || v4.is_unspecified() // 0.0.0.0
-                || v4.is_broadcast() // 255.255.255.255
+                || v4.is_broadcast()  // 255.255.255.255
         }
         std::net::IpAddr::V6(v6) => {
-            v6.is_loopback()          // ::1
-                || v6.is_unspecified() // ::
+            let s = v6.segments();
+            v6.is_loopback()              // ::1
+                || v6.is_unspecified()    // ::
+                || (s[0] & 0xffc0) == 0xfe80 // fe80::/10  link-local
+                || (s[0] & 0xfe00) == 0xfc00 // fc00::/7   unique-local (ULA)
+                || (s[0] & 0xff00) == 0xff00 // ff00::/8   multicast
         }
     }
 }

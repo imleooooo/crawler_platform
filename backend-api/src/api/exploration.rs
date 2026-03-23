@@ -31,16 +31,17 @@ pub async fn ai_exploration(
     State(state): State<AppState>,
     Json(request): Json<ExplorationRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    // Metrics
+    // Validate before touching metrics so an invalid URL never inflates counters.
+    if let Err(e) = validate_url(&request.url).await {
+        return Err((axum::http::StatusCode::UNPROCESSABLE_ENTITY, e));
+    }
+
+    // Metrics — incremented only after validation passes
     {
         if let Ok(mut metrics) = state.metrics.lock() {
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
-    }
-
-    if let Err(e) = validate_url(&request.url) {
-        return Err((axum::http::StatusCode::UNPROCESSABLE_ENTITY, e));
     }
 
     let mut current_url = request.url.clone();
@@ -135,8 +136,14 @@ pub async fn ai_exploration(
         );
 
         // 3. Crawl Articles (Top 5)
+        // Re-validate each discovered link: an attacker-controlled seed page
+        // could embed absolute links to internal addresses.
         let articles_to_crawl: Vec<String> = article_links.into_iter().take(5).collect();
         for (i, link) in articles_to_crawl.iter().enumerate() {
+            if let Err(e) = validate_url(link).await {
+                tracing::warn!("Skipping article link that failed URL validation: {}", e);
+                continue;
+            }
             let art_req = crawler::CrawlerRequest {
                 urls: vec![link.clone()],
                 run_mode: None,
@@ -191,11 +198,13 @@ pub async fn ai_exploration(
             }
         }
 
-        // Pagination
-        if let Some(next) = next_page_url {
-            current_url = next;
-        } else {
-            break;
+        // Pagination — validate before following to prevent SSRF via a next-page link
+        // embedded in an attacker-controlled page.
+        match next_page_url {
+            Some(next) if validate_url(&next).await.is_ok() => {
+                current_url = next;
+            }
+            _ => break,
         }
     }
 
