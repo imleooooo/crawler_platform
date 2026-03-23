@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use url::Url;
 use uuid::Uuid;
 
-use crate::services::{crawler, s3, sanitize_bucket_name};
+use crate::services::{crawler, s3, sanitize_bucket_name, validate_url};
 use crate::state::AppState;
 
 static LINK_REGEX: OnceLock<regex::Regex> = OnceLock::new();
@@ -37,6 +37,10 @@ pub async fn ai_exploration(
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
+    }
+
+    if let Err(e) = validate_url(&request.url) {
+        return Err((axum::http::StatusCode::UNPROCESSABLE_ENTITY, e));
     }
 
     let mut current_url = request.url.clone();

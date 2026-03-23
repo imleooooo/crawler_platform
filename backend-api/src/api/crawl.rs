@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
 
-use crate::services::{crawler, s3, sanitize_bucket_name};
+use crate::services::{crawler, s3, sanitize_bucket_name, validate_url};
 use crate::state::AppState;
 
 static URL_REGEX: OnceLock<regex::Regex> = OnceLock::new();
@@ -68,6 +68,11 @@ pub async fn agent_crawl(
 
     // Save prompt for later use in JSON (before it's moved)
     let prompt_for_json = request.prompt.clone();
+
+    // Validate the resolved URL before handing it to the crawler
+    if let Err(e) = validate_url(&target_url) {
+        return Err((axum::http::StatusCode::UNPROCESSABLE_ENTITY, e));
+    }
 
     // Call Crawler with agent mode
     let crawl_req = crawler::CrawlerRequest {
@@ -189,6 +194,20 @@ pub async fn batch_crawl(
     State(state): State<AppState>,
     Json(request): Json<BatchCrawlRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    // Validate all URLs before any processing so we don't enqueue or partially
+    // execute a request that contains a disallowed target.
+    let invalid: Vec<String> = request
+        .urls
+        .iter()
+        .filter_map(|u| validate_url(u).err().map(|e| e))
+        .collect();
+    if !invalid.is_empty() {
+        return Err((
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            format!("Invalid URL(s): {}", invalid.join("; ")),
+        ));
+    }
+
     // Generate bucket name upfront for tracking and deletion
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
