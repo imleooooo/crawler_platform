@@ -7,6 +7,8 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
 
+use futures::future::join_all;
+
 use crate::services::{crawler, s3, sanitize_bucket_name, validate_url};
 use crate::state::AppState;
 
@@ -194,14 +196,11 @@ pub async fn batch_crawl(
     State(state): State<AppState>,
     Json(request): Json<BatchCrawlRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    // Validate all URLs before any processing so we don't enqueue or partially
-    // execute a request that contains a disallowed target.
-    let mut invalid = Vec::new();
-    for u in &request.urls {
-        if let Err(e) = validate_url(u).await {
-            invalid.push(e);
-        }
-    }
+    // Validate all URLs concurrently before any processing.
+    // Sequential DNS lookups would scale to N × 5s for slow/unresolvable
+    // hostnames; concurrent validation caps total wait at one timeout (5s).
+    let validation_results = join_all(request.urls.iter().map(|u| validate_url(u))).await;
+    let invalid: Vec<String> = validation_results.into_iter().filter_map(|r| r.err()).collect();
     if !invalid.is_empty() {
         return Err((
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,
