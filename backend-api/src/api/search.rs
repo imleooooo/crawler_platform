@@ -91,152 +91,176 @@ async fn search_logic(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     for keyword in &request.keywords {
-        let mut fetched_count = 0;
-        let mut start_index = 1;
+        // Google Custom Search API hard limit: start ≤ 91 → max 100 results per query.
+        //
+        // To exceed 100 results for the same keyword we issue multiple queries, each
+        // covering a non-overlapping 6-month date window via `after:` / `before:`
+        // operators in the query string.  Up to MAX_DATE_BATCHES windows are used,
+        // giving a ceiling of 500 results per keyword.
+        //
+        // When the caller already supplies a `time_limit`, the date range is already
+        // constrained, so we skip window-batching and use a single query instead.
+        const MAX_DATE_BATCHES: usize = 5;
+        const DATE_WINDOW_DAYS: i64 = 180; // ~6 months per window
 
-        // Google Custom Search API hard limit: start ≤ 91 → max 100 results per keyword.
-        // Distribute the requested total evenly across keywords so more keywords yield
-        // more total results.
         let per_keyword_limit = ((request.num_results + request.keywords.len() as i32 - 1)
             / request.keywords.len() as i32)
-            .min(100);
+            .min(100 * MAX_DATE_BATCHES as i32);
 
-        // Loop to fetch results in batches/pages
-        loop {
-            if fetched_count >= per_keyword_limit {
-                break;
-            }
+        let date_batches_needed: usize = if request.time_limit.is_none() {
+            ((per_keyword_limit + 99) / 100).max(1) as usize
+        } else {
+            1 // caller-supplied time_limit already restricts the date range
+        };
 
-            // Google API: start index must be ≤ 91 (pages beyond that return 400).
-            if start_index > 91 {
-                tracing::info!(
-                    "Reached Google CSE pagination limit (start > 91) for keyword '{}': {} results collected",
-                    keyword,
-                    fetched_count
+        let today = chrono::Utc::now().date_naive();
+        let mut keyword_total = 0i32;
+
+        'date_batches: for batch_idx in 0..date_batches_needed {
+            // Build the query for this date window.
+            let mut base_query = keyword.clone();
+
+            if date_batches_needed > 1 {
+                // Window 0 = most recent DATE_WINDOW_DAYS, window 1 = next older, …
+                let days_end = batch_idx as i64 * DATE_WINDOW_DAYS;
+                let days_start = days_end + DATE_WINDOW_DAYS;
+                let before = today - chrono::Duration::days(days_end);
+                let after = today - chrono::Duration::days(days_start);
+                base_query = format!(
+                    "{} after:{} before:{}",
+                    base_query,
+                    after.format("%Y-%m-%d"),
+                    before.format("%Y-%m-%d"),
                 );
-                break;
             }
 
-            // Determine how many to fetch in this batch (max 10 allowed by Google API)
-            let num = (per_keyword_limit - fetched_count).min(10);
-
-            // Construct Query
-            let mut query = keyword.clone();
-
-            // If target_website is true, append site filters
+            // Append static filters on top of the (possibly date-windowed) query.
             if let Some(true) = request.target_website {
                 let site_filter = TARGET_SITES
                     .iter()
                     .map(|site| format!("site:{}", site))
                     .collect::<Vec<String>>()
                     .join(" OR ");
-                query = format!("({}) AND ({})", query, site_filter);
-                tracing::info!("Applied Target Website Filter: {}", query);
+                base_query = format!("({}) AND ({})", base_query, site_filter);
+                tracing::info!("Applied Target Website Filter: {}", base_query);
             }
-
-            // Also append manual site if provided (legacy)
             if let Some(site) = &request.site {
-                query = format!("{} site:{}", query, site);
+                base_query = format!("{} site:{}", base_query, site);
             }
 
-            let url = "https://www.googleapis.com/customsearch/v1";
-            // Build params as owned strings so the retry closure can clone them
-            // without lifetime issues (RequestBuilder is not Clone).
-            let mut params: Vec<(String, String)> = vec![
-                ("key".into(), google_api_key.clone()),
-                ("cx".into(), google_cx.clone()),
-                ("q".into(), query.clone()),
-                ("num".into(), num.to_string()),
-                ("start".into(), start_index.to_string()),
-            ];
-            if let Some(ref t) = request.time_limit {
-                params.push(("dateRestrict".into(), t.clone()));
-            }
-            if let Some(ref s) = request.site {
-                params.push(("siteSearch".into(), s.clone()));
-                params.push(("siteSearchFilter".into(), "i".into()));
-            }
+            let batch_limit = (per_keyword_limit - keyword_total).min(100);
+            let mut batch_fetched = 0i32;
+            let mut start_index = 1i32;
 
-            let google_result = (|| {
-                let p = params.clone();
-                let c = client.clone();
-                async move {
-                    c.get(url)
-                        .query(&p)
-                        .send()
-                        .await
-                        .map_err(|e| format!("Google Search failed: {}", e))
-                        .and_then(|r| {
-                            if r.status().is_server_error() {
-                                Err(format!("Google Search server error: {}", r.status()))
-                            } else {
-                                Ok(r)
-                            }
-                        })
-                }
-            })
-            .retry(
-                ExponentialBuilder::default()
-                    .with_min_delay(Duration::from_millis(300))
-                    .with_max_delay(Duration::from_secs(5))
-                    .with_max_times(3),
-            )
-            .await;
-
-            match google_result {
-                Err(e) => {
-                    tracing::error!("Error searching for {}: {}", keyword, e);
+            loop {
+                if batch_fetched >= batch_limit {
                     break;
                 }
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        if let Ok(data) = resp.json::<Value>().await {
-                            if let Some(items) = data["items"].as_array() {
-                                let count = items.len();
-                                if count == 0 {
-                                    break; // No results returned
-                                }
 
-                                for item in items {
-                                    if let Some(link) = item["link"].as_str() {
-                                        all_urls.push(link.to_string());
+                // Google API: start > 91 returns 400.
+                if start_index > 91 {
+                    tracing::info!(
+                        "Google CSE pagination limit reached for '{}' (window {}): {} total so far",
+                        keyword, batch_idx, keyword_total
+                    );
+                    break;
+                }
+
+                let num = (batch_limit - batch_fetched).min(10);
+
+                let url = "https://www.googleapis.com/customsearch/v1";
+                let mut params: Vec<(String, String)> = vec![
+                    ("key".into(), google_api_key.clone()),
+                    ("cx".into(), google_cx.clone()),
+                    ("q".into(), base_query.clone()),
+                    ("num".into(), num.to_string()),
+                    ("start".into(), start_index.to_string()),
+                ];
+                if let Some(ref t) = request.time_limit {
+                    params.push(("dateRestrict".into(), t.clone()));
+                }
+                if let Some(ref s) = request.site {
+                    params.push(("siteSearch".into(), s.clone()));
+                    params.push(("siteSearchFilter".into(), "i".into()));
+                }
+
+                let google_result = (|| {
+                    let p = params.clone();
+                    let c = client.clone();
+                    async move {
+                        c.get(url)
+                            .query(&p)
+                            .send()
+                            .await
+                            .map_err(|e| format!("Google Search failed: {}", e))
+                            .and_then(|r| {
+                                if r.status().is_server_error() {
+                                    Err(format!("Google Search server error: {}", r.status()))
+                                } else {
+                                    Ok(r)
+                                }
+                            })
+                    }
+                })
+                .retry(
+                    ExponentialBuilder::default()
+                        .with_min_delay(Duration::from_millis(300))
+                        .with_max_delay(Duration::from_secs(5))
+                        .with_max_times(3),
+                )
+                .await;
+
+                match google_result {
+                    Err(e) => {
+                        tracing::error!("Error searching for {}: {}", keyword, e);
+                        break;
+                    }
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            if let Ok(data) = resp.json::<Value>().await {
+                                if let Some(items) = data["items"].as_array() {
+                                    let count = items.len();
+                                    if count == 0 {
+                                        break;
                                     }
-                                }
-
-                                fetched_count += count as i32;
-                                start_index += count as i32;
-
-                                // If we received fewer items than requested for this page, we're likely at the end
-                                if count < num as usize {
+                                    for item in items {
+                                        if let Some(link) = item["link"].as_str() {
+                                            all_urls.push(link.to_string());
+                                        }
+                                    }
+                                    batch_fetched += count as i32;
+                                    keyword_total += count as i32;
+                                    start_index += count as i32;
+                                    if count < num as usize {
+                                        break;
+                                    }
+                                } else {
                                     break;
                                 }
                             } else {
-                                // "items" key missing implies 0 results
+                                tracing::error!(
+                                    "Failed to parse Google Search response JSON for keyword '{}'",
+                                    keyword
+                                );
                                 break;
                             }
                         } else {
-                            tracing::error!(
-                                "Failed to parse Google Search response JSON for keyword '{}'",
-                                keyword
+                            tracing::warn!(
+                                "Google Search API terminated early: Status {} for keyword '{}' at start_index {}",
+                                resp.status(),
+                                keyword,
+                                start_index
                             );
                             break;
                         }
-                    } else {
-                        // If we hit an error (e.g., 400 Bad Request due to deep pagination), we stop this keyword
-                        tracing::warn!(
-                            "Google Search API terminated early: Status {} for keyword '{}' at start_index {}",
-                            resp.status(),
-                            keyword,
-                            start_index
-                        );
-                        break;
                     }
                 }
-            }
+            } // end inner pagination loop
 
-            // Optional: Sleep briefly to avoid aggressive rate limiting if fetching many pages?
-            // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+            if keyword_total >= per_keyword_limit {
+                break 'date_batches;
+            }
+        } // end date_batches
     }
 
     // Deduplicate
