@@ -94,16 +94,31 @@ async fn search_logic(
         let mut fetched_count = 0;
         let mut start_index = 1;
 
+        // Google Custom Search API hard limit: start ≤ 91 → max 100 results per keyword.
+        // Distribute the requested total evenly across keywords so more keywords yield
+        // more total results.
+        let per_keyword_limit = ((request.num_results + request.keywords.len() as i32 - 1)
+            / request.keywords.len() as i32)
+            .min(100);
+
         // Loop to fetch results in batches/pages
         loop {
-            if fetched_count >= request.num_results {
+            if fetched_count >= per_keyword_limit {
+                break;
+            }
+
+            // Google API: start index must be ≤ 91 (pages beyond that return 400).
+            if start_index > 91 {
+                tracing::info!(
+                    "Reached Google CSE pagination limit (start > 91) for keyword '{}': {} results collected",
+                    keyword,
+                    fetched_count
+                );
                 break;
             }
 
             // Determine how many to fetch in this batch (max 10 allowed by Google API)
-            let num = (request.num_results - fetched_count).min(10);
-
-            // Safety check for Google API typical limits (optional, but prevents wasted calls)
+            let num = (per_keyword_limit - fetched_count).min(10);
 
             // Construct Query
             let mut query = keyword.clone();
