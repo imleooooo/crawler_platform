@@ -205,29 +205,21 @@ impl BrowserManager {
 
             let mut screenshot_data = None;
             if run_config.screenshot {
-                // 10 MB cap on raw PNG bytes — a full-page screenshot of a very
-                // tall page can easily exceed this and exhaust memory or S3 quota.
-                const MAX_SCREENSHOT_BYTES: usize = 10 * 1024 * 1024;
-
+                // Capture viewport only (not full_page) so the PNG size is
+                // bounded by the configured viewport dimensions (default 1080×600).
+                // full_page captures the entire scrollable height, which can be
+                // arbitrarily large and OOMs the worker before any post-hoc check
+                // could run.
                 let screenshot_bytes = page
                     .screenshot(
                         chromiumoxide::page::ScreenshotParams::builder()
                             .format(
                                 chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat::Png,
                             )
-                            .full_page(true)
                             .build(),
                     )
                     .await
                     .map_err(|e| CrawlError::ScreenshotError(e.to_string()))?;
-
-                if screenshot_bytes.len() > MAX_SCREENSHOT_BYTES {
-                    return Err(CrawlError::ScreenshotError(format!(
-                        "Screenshot too large ({} bytes, limit {} MB)",
-                        screenshot_bytes.len(),
-                        MAX_SCREENSHOT_BYTES / 1024 / 1024
-                    )));
-                }
 
                 screenshot_data = Some(general_purpose::STANDARD.encode(screenshot_bytes));
             }

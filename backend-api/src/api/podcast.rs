@@ -408,6 +408,12 @@ pub async fn podcast_search(
                                 }
                             }
 
+                            if !success {
+                                // Remove the partial file so repeated failed attempts
+                                // don't accumulate ~200 MB of incomplete data on disk.
+                                let _ = tokio::fs::remove_file(&filepath).await;
+                            }
+
                             if success {
                                 // Upload to S3
                                 if let Ok(s3_path) = s3::save_to_rustfs_file(
