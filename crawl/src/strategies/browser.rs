@@ -234,9 +234,18 @@ impl BrowserManager {
 
         // Always close the tab — prevents orphaned navigations accumulating in the
         // pooled browser when a timeout fired and the inner block returned Err early.
-        let _ = page.close().await;
+        //
+        // Propagation rules:
+        //   crawl Ok  + close Ok  → Ok(result)
+        //   crawl Ok  + close Err → Err(close_err)   surface it: browser is in bad shape
+        //   crawl Err + close Ok  → Err(crawl_err)   crawl error takes precedence
+        //   crawl Err + close Err → Err(crawl_err)   crawl error takes precedence
+        let close_result = page
+            .close()
+            .await
+            .map_err(|e| CrawlError::Other(format!("page.close failed: {}", e)));
 
-        result
+        result.and_then(|ok| close_result.map(|_| ok))
     }
 
     pub async fn close(mut self) {
