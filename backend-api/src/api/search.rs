@@ -3,7 +3,6 @@ use backon::{ExponentialBuilder, Retryable};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
@@ -84,7 +83,11 @@ async fn search_logic(
     let google_cx = state.google_cx.clone();
 
     // 2. Google Custom Search
-    let mut all_urls = Vec::new();
+    // Use a HashSet to accumulate unique URLs as we go, so that the remaining
+    // quota for each keyword reflects unique links collected so far rather than
+    // raw hit counts.  Duplicate-heavy keywords won't exhaust the budget and
+    // block later keywords that may return genuinely new links.
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -102,18 +105,16 @@ async fn search_logic(
     const MAX_DATE_BATCHES: usize = 5;
     const DATE_WINDOW_DAYS: i64 = 180; // ~6 months per window
 
-    // Track how many URLs have been collected across all keywords so that unused
-    // quota from sparse keywords flows to later ones, rather than being wasted.
-    let mut total_collected: i32 = 0;
-
     for keyword in &request.keywords {
-        if total_collected >= request.num_results {
+        let unique_so_far = seen_urls.len() as i32;
+        if unique_so_far >= request.num_results {
             break;
         }
 
-        // Give this keyword the full remaining quota (up to the per-query ceiling).
-        // This redistributes unused slots from keywords that returned fewer hits.
-        let per_keyword_limit = (request.num_results - total_collected)
+        // Give this keyword the full remaining unique-URL quota.
+        // Basing this on seen_urls.len() rather than raw hit counts means
+        // duplicate-heavy early keywords don't starve later keywords.
+        let per_keyword_limit = (request.num_results - unique_so_far)
             .min(100 * MAX_DATE_BATCHES as i32);
 
         let date_batches_needed: usize = if request.time_limit.is_none() {
@@ -234,7 +235,7 @@ async fn search_logic(
                                     }
                                     for item in items {
                                         if let Some(link) = item["link"].as_str() {
-                                            all_urls.push(link.to_string());
+                                            seen_urls.insert(link.to_string());
                                         }
                                     }
                                     batch_fetched += count as i32;
@@ -271,15 +272,10 @@ async fn search_logic(
             }
         } // end date_batches
 
-        total_collected += keyword_total;
     }
 
-    // Deduplicate
-    let unique_urls: Vec<String> = all_urls
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
+    // seen_urls is already deduplicated; convert to Vec for the crawler.
+    let unique_urls: Vec<String> = seen_urls.into_iter().collect();
 
     if unique_urls.is_empty() {
         return Ok(Json(json!({"data": []})));
