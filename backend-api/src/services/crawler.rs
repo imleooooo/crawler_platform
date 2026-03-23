@@ -332,59 +332,61 @@ async fn fetch_and_parse(
     // so a redirect-heavy or slow site cannot hold a worker for MAX_REDIRECTS×60s.
     const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
-    let (title, published_at, mut markdown) =
-        tokio::time::timeout(FETCH_TIMEOUT, async {
-            let mut current_url = url.to_string();
-            let mut hops = 0usize;
+    // The timeout covers only network I/O: throttle sleeps, redirect hops, and
+    // body streaming.  Synchronous CPU work (HTML parsing) runs after the
+    // deadline so it cannot cause a false timeout on a large but fully-received
+    // page.  reqwest::Client::timeout() already enforces the per-request
+    // deadline through body consumption, so the body read here is covered by
+    // both the per-hop client timeout and this outer end-to-end budget.
+    let html = tokio::time::timeout(FETCH_TIMEOUT, async {
+        let mut current_url = url.to_string();
+        let mut hops = 0usize;
 
-            let resp = loop {
-                apply_throttle(&current_url, throttle).await;
+        let resp = loop {
+            apply_throttle(&current_url, throttle).await;
 
-                let resp = client
-                    .get(&current_url)
-                    .send()
-                    .await
-                    .map_err(|e| e.to_string())?;
+            let resp = client
+                .get(&current_url)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
 
-                if resp.status().is_redirection() {
-                    if hops >= MAX_REDIRECTS {
-                        return Err(format!("too many redirects (> {})", MAX_REDIRECTS));
-                    }
-                    let location = resp
-                        .headers()
-                        .get(reqwest::header::LOCATION)
-                        .and_then(|v| v.to_str().ok())
-                        .ok_or_else(|| "redirect with no Location header".to_string())?;
-                    // Resolve relative Location values against the current URL.
-                    current_url = url::Url::parse(&current_url)
-                        .and_then(|base| base.join(location))
-                        .map_err(|e| format!("invalid redirect target: {}", e))?
-                        .to_string();
-                    hops += 1;
-                    continue;
+            if resp.status().is_redirection() {
+                if hops >= MAX_REDIRECTS {
+                    return Err(format!("too many redirects (> {})", MAX_REDIRECTS));
                 }
-
-                break resp;
-            };
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| "redirect with no Location header".to_string())?;
+                // Resolve relative Location values against the current URL.
+                current_url = url::Url::parse(&current_url)
+                    .and_then(|base| base.join(location))
+                    .map_err(|e| format!("invalid redirect target: {}", e))?
+                    .to_string();
+                hops += 1;
+                continue;
+            }
 
             let status = resp.status();
             if !status.is_success() {
                 return Err(format!("HTTP {}", status));
             }
 
-            // Body read is inside the timeout so a slow final response cannot
-            // extend the fetch beyond the single 60 s end-to-end deadline.
-            let html = resp.text().await.map_err(|e| e.to_string())?;
+            break resp.text().await.map_err(|e| e.to_string())?;
+        };
 
-            let title = extract_title(&html);
-            let published_at = extract_published_date(&html);
-            let markdown = html2text::from_read(html.as_bytes(), 80)
-                .map_err(|e| format!("HTML parse error: {}", e))?;
+        Ok(resp)
+    })
+    .await
+    .map_err(|_| format!("fetch timed out after {}s", FETCH_TIMEOUT.as_secs()))??;
 
-            Ok((title, published_at, markdown))
-        })
-        .await
-        .map_err(|_| format!("fetch timed out after {}s", FETCH_TIMEOUT.as_secs()))??;
+    // Synchronous parsing runs outside the network deadline.
+    let title = extract_title(&html);
+    let published_at = extract_published_date(&html);
+    let mut markdown = html2text::from_read(html.as_bytes(), 80)
+        .map_err(|e| format!("HTML parse error: {}", e))?;
 
     if ignore_links {
         markdown = clean_markdown_links(&markdown);
