@@ -359,54 +359,64 @@ pub async fn podcast_search(
                                 None
                             }
                         };
-                        if let Some(mut f) = file {
-                            let mut stream = res.bytes_stream();
-                            let mut success = true;
-                            // Per-chunk idle timeout: fires only when the origin
-                            // stops sending data, not during normal slow transfers.
-                            // This releases the concurrency slot from stalled
-                            // origins without cutting off healthy large episodes.
-                            const CHUNK_IDLE_TIMEOUT: std::time::Duration =
-                                std::time::Duration::from_secs(30);
-                            // Hard cap per episode to prevent disk/memory exhaustion
-                            // from unexpectedly large files or malicious origins.
-                            const MAX_AUDIO_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
-                            let mut bytes_written: u64 = 0;
-                            loop {
-                                match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, stream.next()).await
-                                {
-                                    Err(_) => {
-                                        // No chunk arrived within 30s — origin stalled
-                                        result_entry.error =
-                                            Some("Audio download stalled (30s idle)".to_string());
-                                        success = false;
-                                        break;
-                                    }
-                                    Ok(None) => break, // stream finished normally
-                                    Ok(Some(Ok(chunk))) => {
-                                        bytes_written += chunk.len() as u64;
-                                        if bytes_written > MAX_AUDIO_BYTES {
-                                            result_entry.error = Some(format!(
-                                                "Audio file too large (exceeded {} MB limit)",
-                                                MAX_AUDIO_BYTES / 1024 / 1024
-                                            ));
+                        if let Some(f) = file {
+                            // Stream loop runs inside a block so `f` is dropped
+                            // before remove_file — on Windows an open handle
+                            // prevents deletion, which would leave partial files
+                            // on disk despite the cleanup below.
+                            let success = {
+                                let mut f = f;
+                                let mut stream = res.bytes_stream();
+                                let mut success = true;
+                                // Per-chunk idle timeout: fires only when the origin
+                                // stops sending data, not during normal slow transfers.
+                                // This releases the concurrency slot from stalled
+                                // origins without cutting off healthy large episodes.
+                                const CHUNK_IDLE_TIMEOUT: std::time::Duration =
+                                    std::time::Duration::from_secs(30);
+                                // Hard cap per episode to prevent disk/memory exhaustion
+                                // from unexpectedly large files or malicious origins.
+                                const MAX_AUDIO_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+                                let mut bytes_written: u64 = 0;
+                                loop {
+                                    match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, stream.next())
+                                        .await
+                                    {
+                                        Err(_) => {
+                                            // No chunk arrived within 30s — origin stalled
+                                            result_entry.error = Some(
+                                                "Audio download stalled (30s idle)".to_string(),
+                                            );
                                             success = false;
                                             break;
                                         }
-                                        if tokio::io::AsyncWriteExt::write_all(&mut f, &chunk)
-                                            .await
-                                            .is_err()
-                                        {
+                                        Ok(None) => break, // stream finished normally
+                                        Ok(Some(Ok(chunk))) => {
+                                            bytes_written += chunk.len() as u64;
+                                            if bytes_written > MAX_AUDIO_BYTES {
+                                                result_entry.error = Some(format!(
+                                                    "Audio file too large (exceeded {} MB limit)",
+                                                    MAX_AUDIO_BYTES / 1024 / 1024
+                                                ));
+                                                success = false;
+                                                break;
+                                            }
+                                            if tokio::io::AsyncWriteExt::write_all(&mut f, &chunk)
+                                                .await
+                                                .is_err()
+                                            {
+                                                success = false;
+                                                break;
+                                            }
+                                        }
+                                        Ok(Some(Err(_))) => {
                                             success = false;
                                             break;
                                         }
-                                    }
-                                    Ok(Some(Err(_))) => {
-                                        success = false;
-                                        break;
                                     }
                                 }
-                            }
+                                success
+                            }; // `f` is dropped here — handle closed before remove_file
 
                             if !success {
                                 // Remove the partial file so repeated failed attempts
