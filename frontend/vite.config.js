@@ -6,7 +6,10 @@ export default defineConfig(({ mode }) => {
   // loadEnv reads .env, .env.local, .env.<mode>, etc. from the project root.
   // The third argument '' makes it load ALL variables, not only VITE_* ones,
   // so API_KEY (no VITE_ prefix, never exposed to the browser) is available.
-  const env = loadEnv(mode, process.cwd(), '')
+  // Resolve to the repo root (one level above frontend/) so the top-level .env
+  // is found regardless of where `vite` is invoked from.
+  const repoRoot = new URL('..', import.meta.url).pathname
+  const env = loadEnv(mode, repoRoot, '')
 
   return {
     plugins: [react()],
