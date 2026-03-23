@@ -71,7 +71,15 @@ impl AsyncWebCrawler {
         } else {
             let manager = self.browser_pool.acquire().await?;
             let res = manager.crawl(config.clone()).await;
-            self.browser_pool.release(manager).await;
+            if res.is_ok() {
+                // Healthy crawl — return browser to idle pool for reuse.
+                self.browser_pool.release(manager).await;
+            } else {
+                // Crawl failed (navigation error, timeout, close failure, etc.).
+                // Discard the instance rather than returning it to the pool;
+                // close() drops the semaphore permit so the slot is released.
+                manager.close().await;
+            }
             res
         };
 
