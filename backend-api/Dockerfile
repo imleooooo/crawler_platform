@@ -2,10 +2,11 @@
 FROM rust:1.85.0-slim-bookworm AS builder
 
 WORKDIR /usr/src/app
-COPY . .
 
-# Build dependencies first to cache them? 
-# For simplicity in this migration, just copy all and build.
+# Install OpenSSL build-time dependencies required by openssl-sys / reqwest native-tls
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+COPY . .
 RUN cargo build --release
 
 # Runtime stage
