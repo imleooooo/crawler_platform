@@ -89,7 +89,7 @@ pub async fn ai_exploration(
             ignore_links: None,
         };
 
-        let crawl_res = crawler::call_crawler_service(&crawl_req).await;
+        let crawl_res = crawler::call_crawler_service(&crawl_req, state.domain_throttle.clone()).await;
         if let Err(e) = crawl_res {
             tracing::error!("Failed to crawl page {}: {}", current_url, e);
             break;
@@ -155,7 +155,7 @@ pub async fn ai_exploration(
                 ignore_links: None,
             };
 
-            if let Ok(art_resp) = crawler::call_crawler_service(&art_req).await {
+            if let Ok(art_resp) = crawler::call_crawler_service(&art_req, state.domain_throttle.clone()).await {
                 if !art_resp.results.is_empty() && art_resp.results[0].success {
                     let art_data = &art_resp.results[0];
                     if let Some(md) = &art_data.markdown {

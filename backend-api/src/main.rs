@@ -116,6 +116,7 @@ async fn main() {
         api_key: cfg.api_key,
         openai_api_key: cfg.openai_api_key,
         enqueue_gate: enqueue_gate.clone(),
+        domain_throttle: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
 
     // false = idle (initial), true = actively processing a crawl job.

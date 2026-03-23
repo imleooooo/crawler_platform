@@ -1,7 +1,8 @@
 use crate::services::queue::QueueService;
 use aws_sdk_s3::Client as S3Client;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{atomic::AtomicBool, Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 /// Acquire the metrics lock regardless of poison state.
 ///
@@ -29,6 +30,9 @@ pub struct AppState {
     /// request that already loaded true before the store may still enqueue
     /// one task; the worst-case leak is bounded by the concurrency limiter.
     pub enqueue_gate: Arc<AtomicBool>,
+    /// Per-domain politeness throttle.  Maps hostname → earliest time the next
+    /// request to that domain may be sent (1 s between requests).
+    pub domain_throttle: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 pub struct MetricsState {

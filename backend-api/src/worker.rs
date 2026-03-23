@@ -127,7 +127,7 @@ pub async fn run_worker(
                 let _ = busy_tx.send(true);
 
                 // Execute Crawl
-                let result = crawler::call_crawler_service(&task).await;
+                let result = crawler::call_crawler_service(&task, state.domain_throttle.clone()).await;
 
                 // Job complete — signal idle before saving results so the shutdown
                 // window starts as soon as the crawl finishes, not after S3 writes.

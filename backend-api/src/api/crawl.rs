@@ -88,7 +88,7 @@ pub async fn agent_crawl(
         ignore_links: request.ignore_links,
     };
 
-    let crawl_res = crawler::call_crawler_service(&crawl_req).await;
+    let crawl_res = crawler::call_crawler_service(&crawl_req, state.domain_throttle.clone()).await;
 
     // Metrics cleanup
     {
@@ -254,7 +254,7 @@ pub async fn batch_crawl(
             }
         }
 
-        let crawl_res = crawler::call_crawler_service(&crawl_req).await;
+        let crawl_res = crawler::call_crawler_service(&crawl_req, state.domain_throttle.clone()).await;
 
         // Metrics cleanup
         {

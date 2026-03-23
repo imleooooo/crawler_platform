@@ -242,16 +242,19 @@ async fn search_logic(
     }
 
     // 3. Call Crawler Service
-    let crawl_res = crawler::call_crawler_service(&crawler::CrawlerRequest {
-        urls: unique_urls.clone(),
-        run_mode: None,
-        api_key: None,
-        prompt: None,
-        model: None,
-        output_dir: request.output_dir.clone(),
-        bucket_name: None,
-        ignore_links: request.ignore_links,
-    })
+    let crawl_res = crawler::call_crawler_service(
+        &crawler::CrawlerRequest {
+            urls: unique_urls.clone(),
+            run_mode: None,
+            api_key: None,
+            prompt: None,
+            model: None,
+            output_dir: request.output_dir.clone(),
+            bucket_name: None,
+            ignore_links: request.ignore_links,
+        },
+        state.domain_throttle.clone(),
+    )
     .await;
 
     {
