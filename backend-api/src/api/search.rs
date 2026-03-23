@@ -90,21 +90,30 @@ async fn search_logic(
         .build()
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    for keyword in &request.keywords {
-        // Google Custom Search API hard limit: start ≤ 91 → max 100 results per query.
-        //
-        // To exceed 100 results for the same keyword we issue multiple queries, each
-        // covering a non-overlapping 6-month date window via `after:` / `before:`
-        // operators in the query string.  Up to MAX_DATE_BATCHES windows are used,
-        // giving a ceiling of 500 results per keyword.
-        //
-        // When the caller already supplies a `time_limit`, the date range is already
-        // constrained, so we skip window-batching and use a single query instead.
-        const MAX_DATE_BATCHES: usize = 5;
-        const DATE_WINDOW_DAYS: i64 = 180; // ~6 months per window
+    // Google Custom Search API hard limit: start ≤ 91 → max 100 results per query.
+    //
+    // To exceed 100 results for the same keyword we issue multiple queries, each
+    // covering a non-overlapping 6-month date window via `after:` / `before:`
+    // operators in the query string.  Up to MAX_DATE_BATCHES windows are used,
+    // giving a ceiling of 500 results per keyword.
+    //
+    // When the caller already supplies a `time_limit`, the date range is already
+    // constrained, so we skip window-batching and use a single query instead.
+    const MAX_DATE_BATCHES: usize = 5;
+    const DATE_WINDOW_DAYS: i64 = 180; // ~6 months per window
 
-        let per_keyword_limit = ((request.num_results + request.keywords.len() as i32 - 1)
-            / request.keywords.len() as i32)
+    // Track how many URLs have been collected across all keywords so that unused
+    // quota from sparse keywords flows to later ones, rather than being wasted.
+    let mut total_collected: i32 = 0;
+
+    for keyword in &request.keywords {
+        if total_collected >= request.num_results {
+            break;
+        }
+
+        // Give this keyword the full remaining quota (up to the per-query ceiling).
+        // This redistributes unused slots from keywords that returned fewer hits.
+        let per_keyword_limit = (request.num_results - total_collected)
             .min(100 * MAX_DATE_BATCHES as i32);
 
         let date_batches_needed: usize = if request.time_limit.is_none() {
@@ -261,6 +270,8 @@ async fn search_logic(
                 break 'date_batches;
             }
         } // end date_batches
+
+        total_collected += keyword_total;
     }
 
     // Deduplicate
