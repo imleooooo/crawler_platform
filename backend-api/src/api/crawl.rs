@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
 
-use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 
 use crate::services::{crawler, s3, sanitize_bucket_name, validate_url};
 use crate::state::AppState;
@@ -196,11 +196,17 @@ pub async fn batch_crawl(
     State(state): State<AppState>,
     Json(request): Json<BatchCrawlRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    // Validate all URLs concurrently before any processing.
-    // Sequential DNS lookups would scale to N × 5s for slow/unresolvable
-    // hostnames; concurrent validation caps total wait at one timeout (5s).
-    let validation_results = join_all(request.urls.iter().map(|u| validate_url(u))).await;
-    let invalid: Vec<String> = validation_results.into_iter().filter_map(|r| r.err()).collect();
+    // Validate all URLs with bounded concurrency before any processing.
+    // join_all would fan out unlimited DNS lookups and saturate the resolver;
+    // sequential would scale to N × 5s. buffer_unordered(8) keeps total wait
+    // near one timeout (5s) while capping simultaneous lookups per request.
+    const URL_VALIDATION_CONCURRENCY: usize = 8;
+    let invalid: Vec<String> = stream::iter(request.urls.iter().cloned())
+        .map(|u| async move { validate_url(&u).await })
+        .buffer_unordered(URL_VALIDATION_CONCURRENCY)
+        .filter_map(|r| async move { r.err() })
+        .collect()
+        .await;
     if !invalid.is_empty() {
         return Err((
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,
