@@ -1,3 +1,4 @@
+import { apiFetch } from '../api';
 import React from 'react';
 import { Inbox, Cog, Clock, Activity, Zap } from 'lucide-react';
 
@@ -11,7 +12,7 @@ const MetricsPanel = () => {
     React.useEffect(() => {
         const fetchMetrics = async () => {
             try {
-                const response = await fetch('http://localhost:8000/api/metrics');
+                const response = await apiFetch('/api/metrics');
                 if (response.ok) {
                     const data = await response.json();
                     setMetrics(data);

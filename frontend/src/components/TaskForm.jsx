@@ -1,3 +1,4 @@
+import { apiFetch } from '../api';
 import React, { useState } from 'react';
 import { Upload, Download, ChevronRight, Search, FileText, Bot, Eye, Mic, Brain, Plug, Github, Check, Plus, Loader2 } from 'lucide-react';
 import StrategyModal from './StrategyModal';
@@ -181,7 +182,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
 
         try {
             const keywordList = searchTerms.split('\n').map(k => k.trim()).filter(k => k);
-            const response = await fetch('http://localhost:8000/api/search-aggregate', {
+            const response = await apiFetch('/api/search-aggregate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -215,7 +216,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
         }, 800);
 
         try {
-            const response = await fetch('http://localhost:8000/api/agent-crawl', {
+            const response = await apiFetch('/api/agent-crawl', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url: "https://google.com", prompt: agentPrompt, model: "gpt-4o", job_id: newTask.id, ignore_links: ignoreLinks }),
@@ -243,7 +244,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
 
         try {
             const urlList = isBatch ? batchUrls.split('\n').map(u => u.trim()).filter(u => u) : [textCrawlUrl.trim()];
-            const response = await fetch('http://localhost:8000/api/batch-crawl', {
+            const response = await apiFetch('/api/batch-crawl', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ urls: urlList, run_mode: 'lite', sync: true, job_id: newTask.id, ignore_links: ignoreLinks }),
@@ -268,7 +269,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
         const progressInterval = simulateProgress(newTask.id);
 
         try {
-            const response = await fetch('http://localhost:8000/api/podcast-search', {
+            const response = await apiFetch('/api/podcast-search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ keywords: podcastKeywords, year: podcastYear, limit: podcastLimit, job_id: newTask.id }),
@@ -292,7 +293,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
         const progressInterval = simulateProgress(newTask.id);
 
         try {
-            const response = await fetch('http://localhost:8000/api/arxiv-search', {
+            const response = await apiFetch('/api/arxiv-search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ keywords: arxivKeywords, year: arxivYear, limit: arxivLimit, job_id: newTask.id }),
@@ -318,7 +319,7 @@ const TaskForm = ({ setSearchResults, ...props }) => {
         }, 1000);
 
         try {
-            const response = await fetch('http://localhost:8000/api/ai-exploration', {
+            const response = await apiFetch('/api/ai-exploration', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url: explorationUrl, limit: explorationLimit, job_id: newTask.id, ignore_links: ignoreLinks }),

@@ -1,3 +1,4 @@
+import { apiFetch } from './api';
 import React, { useState } from 'react';
 import Layout from './components/Layout';
 import MetricsPanel from './components/MetricsPanel';
@@ -83,7 +84,7 @@ function App() {
         try {
           const bucketList = Array.from(buckets);
           console.log("Deleting buckets:", bucketList);
-          await fetch('http://localhost:8000/api/storage/delete', {
+          await apiFetch('/api/storage/delete', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

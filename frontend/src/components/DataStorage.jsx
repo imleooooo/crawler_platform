@@ -1,3 +1,4 @@
+import { apiFetch } from '../api';
 import React, { useEffect, useState } from 'react';
 import { FileText, ChevronRight, Loader2, Download, ExternalLink } from 'lucide-react';
 
@@ -12,7 +13,7 @@ const DataStorage = () => {
     useEffect(() => {
         const fetchStats = async () => {
             try {
-                const response = await fetch('http://localhost:8000/api/storage-stats');
+                const response = await apiFetch('/api/storage-stats');
                 if (response.ok) {
                     const data = await response.json();
                     setStats(data);

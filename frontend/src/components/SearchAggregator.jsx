@@ -1,3 +1,4 @@
+import { apiFetch } from '../api';
 import React, { useState } from 'react';
 import { Search, Loader2, FileJson, FileText, ExternalLink } from 'lucide-react';
 
@@ -23,7 +24,7 @@ const SearchAggregator = () => {
 
             // Note: In a real app, this URL should be configured via environment variables
             // Assuming Vite proxy is set up or CORS is handled
-            const response = await fetch('http://localhost:8000/api/search-aggregate', {
+            const response = await apiFetch('/api/search-aggregate', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
