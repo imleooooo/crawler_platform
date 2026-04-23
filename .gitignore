@@ -28,3 +28,7 @@ backend-api/target/
 crawl/target/
 .env
 *.env
+
+# Local agent/runtime artifacts
+.claude/
+rust_out

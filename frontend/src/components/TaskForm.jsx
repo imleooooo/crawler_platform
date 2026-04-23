@@ -688,9 +688,18 @@ const TaskForm = ({ setSearchResults, ...props }) => {
                     <div className="space-y-3 mt-3">
                         <input type="text" className="w-full ios-input ios-focus-ring bg-white text-sm" placeholder="關鍵字: Lex Fridman, Tech News" value={podcastKeywords} onChange={(e) => setPodcastKeywords(e.target.value)} />
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="Podcast 起始日期" value={podcastStartDate} onChange={(e) => setPodcastStartDate(e.target.value)} />
-                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="Podcast 結束日期" value={podcastEndDate} onChange={(e) => setPodcastEndDate(e.target.value)} />
-                            <input type="number" className="ios-input ios-focus-ring bg-white text-sm" placeholder="數量" value={podcastLimit} onChange={(e) => setPodcastLimit(parseInt(e.target.value) || 5)} min="1" max="20" />
+                            <label className="space-y-1">
+                                <span className="block text-xs font-medium text-gray-600">起始日期</span>
+                                <input type="date" className="w-full ios-input ios-focus-ring bg-white text-sm" aria-label="Podcast 起始日期" value={podcastStartDate} onChange={(e) => setPodcastStartDate(e.target.value)} />
+                            </label>
+                            <label className="space-y-1">
+                                <span className="block text-xs font-medium text-gray-600">結束日期</span>
+                                <input type="date" className="w-full ios-input ios-focus-ring bg-white text-sm" aria-label="Podcast 結束日期" value={podcastEndDate} onChange={(e) => setPodcastEndDate(e.target.value)} />
+                            </label>
+                            <label className="space-y-1">
+                                <span className="block text-xs font-medium text-gray-600">數量</span>
+                                <input type="number" className="w-full ios-input ios-focus-ring bg-white text-sm" placeholder="數量" value={podcastLimit} onChange={(e) => setPodcastLimit(parseInt(e.target.value) || 5)} min="1" max="20" />
+                            </label>
                         </div>
                     </div>
                 )}
@@ -714,9 +723,18 @@ const TaskForm = ({ setSearchResults, ...props }) => {
                     <div className="space-y-3 mt-3">
                         <input type="text" className="w-full ios-input ios-focus-ring bg-white text-sm" placeholder="關鍵字: LLM Agents, Quantum" value={arxivKeywords} onChange={(e) => setArxivKeywords(e.target.value)} />
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="ArXiv 起始日期" value={arxivStartDate} onChange={(e) => setArxivStartDate(e.target.value)} />
-                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="ArXiv 結束日期" value={arxivEndDate} onChange={(e) => setArxivEndDate(e.target.value)} />
-                            <input type="number" className="ios-input ios-focus-ring bg-white text-sm" placeholder="數量" value={arxivLimit} onChange={(e) => setArxivLimit(parseInt(e.target.value) || 5)} min="1" max="20" />
+                            <label className="space-y-1">
+                                <span className="block text-xs font-medium text-gray-600">起始日期</span>
+                                <input type="date" className="w-full ios-input ios-focus-ring bg-white text-sm" aria-label="ArXiv 起始日期" value={arxivStartDate} onChange={(e) => setArxivStartDate(e.target.value)} />
+                            </label>
+                            <label className="space-y-1">
+                                <span className="block text-xs font-medium text-gray-600">結束日期</span>
+                                <input type="date" className="w-full ios-input ios-focus-ring bg-white text-sm" aria-label="ArXiv 結束日期" value={arxivEndDate} onChange={(e) => setArxivEndDate(e.target.value)} />
+                            </label>
+                            <label className="space-y-1">
+                                <span className="block text-xs font-medium text-gray-600">數量</span>
+                                <input type="number" className="w-full ios-input ios-focus-ring bg-white text-sm" placeholder="數量" value={arxivLimit} onChange={(e) => setArxivLimit(parseInt(e.target.value) || 5)} min="1" max="20" />
+                            </label>
                         </div>
                     </div>
                 )}
