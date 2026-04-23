@@ -73,10 +73,12 @@ const TaskForm = ({ setSearchResults, ...props }) => {
     // Download state
     const [downloadTypes, setDownloadTypes] = useState({ podcast: false, arxiv: false });
     const [podcastKeywords, setPodcastKeywords] = useState('');
-    const [podcastYear, setPodcastYear] = useState('');
+    const [podcastStartDate, setPodcastStartDate] = useState('');
+    const [podcastEndDate, setPodcastEndDate] = useState('');
     const [podcastLimit, setPodcastLimit] = useState(5);
     const [arxivKeywords, setArxivKeywords] = useState('');
-    const [arxivYear, setArxivYear] = useState('');
+    const [arxivStartDate, setArxivStartDate] = useState('');
+    const [arxivEndDate, setArxivEndDate] = useState('');
     const [arxivLimit, setArxivLimit] = useState(5);
 
     const openModal = (strategyId) => {
@@ -265,14 +267,26 @@ const TaskForm = ({ setSearchResults, ...props }) => {
 
     const handlePodcastSubmit = async () => {
         if (!podcastKeywords.trim()) { alert('請輸入 Podcast 關鍵字'); return; }
+        if (podcastStartDate && podcastEndDate && podcastStartDate > podcastEndDate) {
+            alert('Podcast 起始日期不可晚於結束日期');
+            return;
+        }
         const newTask = createTask(`Podcast 下載: ${podcastKeywords}`, '指定下載');
         const progressInterval = simulateProgress(newTask.id);
 
         try {
+            const podcastPayload = {
+                keywords: podcastKeywords,
+                start_date: podcastStartDate || undefined,
+                end_date: podcastEndDate || undefined,
+                limit: podcastLimit,
+                job_id: newTask.id,
+            };
+
             const response = await apiFetch('/api/podcast-search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ keywords: podcastKeywords, year: podcastYear, limit: podcastLimit, job_id: newTask.id }),
+                body: JSON.stringify(podcastPayload),
             });
             clearInterval(progressInterval);
             if (!response.ok) throw new Error(`Error ${response.status}`);
@@ -289,14 +303,26 @@ const TaskForm = ({ setSearchResults, ...props }) => {
 
     const handleArxivSubmit = async () => {
         if (!arxivKeywords.trim()) { alert('請輸入 ArXiv 關鍵字'); return; }
+        if (arxivStartDate && arxivEndDate && arxivStartDate > arxivEndDate) {
+            alert('ArXiv 起始日期不可晚於結束日期');
+            return;
+        }
         const newTask = createTask(`ArXiv 下載: ${arxivKeywords}`, '指定下載');
         const progressInterval = simulateProgress(newTask.id);
 
         try {
+            const arxivPayload = {
+                keywords: arxivKeywords,
+                start_date: arxivStartDate || undefined,
+                end_date: arxivEndDate || undefined,
+                limit: arxivLimit,
+                job_id: newTask.id,
+            };
+
             const response = await apiFetch('/api/arxiv-search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ keywords: arxivKeywords, year: arxivYear, limit: arxivLimit, job_id: newTask.id }),
+                body: JSON.stringify(arxivPayload),
             });
             clearInterval(progressInterval);
             if (!response.ok) throw new Error(`Error ${response.status}`);
@@ -661,8 +687,9 @@ const TaskForm = ({ setSearchResults, ...props }) => {
                 {downloadTypes.podcast && (
                     <div className="space-y-3 mt-3">
                         <input type="text" className="w-full ios-input ios-focus-ring bg-white text-sm" placeholder="關鍵字: Lex Fridman, Tech News" value={podcastKeywords} onChange={(e) => setPodcastKeywords(e.target.value)} />
-                        <div className="grid grid-cols-2 gap-3">
-                            <input type="text" className="ios-input ios-focus-ring bg-white text-sm" placeholder="年份 (選填)" value={podcastYear} onChange={(e) => setPodcastYear(e.target.value)} />
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="Podcast 起始日期" value={podcastStartDate} onChange={(e) => setPodcastStartDate(e.target.value)} />
+                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="Podcast 結束日期" value={podcastEndDate} onChange={(e) => setPodcastEndDate(e.target.value)} />
                             <input type="number" className="ios-input ios-focus-ring bg-white text-sm" placeholder="數量" value={podcastLimit} onChange={(e) => setPodcastLimit(parseInt(e.target.value) || 5)} min="1" max="20" />
                         </div>
                     </div>
@@ -686,8 +713,9 @@ const TaskForm = ({ setSearchResults, ...props }) => {
                 {downloadTypes.arxiv && (
                     <div className="space-y-3 mt-3">
                         <input type="text" className="w-full ios-input ios-focus-ring bg-white text-sm" placeholder="關鍵字: LLM Agents, Quantum" value={arxivKeywords} onChange={(e) => setArxivKeywords(e.target.value)} />
-                        <div className="grid grid-cols-2 gap-3">
-                            <input type="text" className="ios-input ios-focus-ring bg-white text-sm" placeholder="年份 (選填)" value={arxivYear} onChange={(e) => setArxivYear(e.target.value)} />
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="ArXiv 起始日期" value={arxivStartDate} onChange={(e) => setArxivStartDate(e.target.value)} />
+                            <input type="date" className="ios-input ios-focus-ring bg-white text-sm" aria-label="ArXiv 結束日期" value={arxivEndDate} onChange={(e) => setArxivEndDate(e.target.value)} />
                             <input type="number" className="ios-input ios-focus-ring bg-white text-sm" placeholder="數量" value={arxivLimit} onChange={(e) => setArxivLimit(parseInt(e.target.value) || 5)} min="1" max="20" />
                         </div>
                     </div>

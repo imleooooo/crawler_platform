@@ -12,8 +12,7 @@ pub async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>)
     let redis_result = tokio::time::timeout(timeout, state.queue_service.ping()).await;
     let redis_ok = matches!(redis_result, Ok(Ok(())));
 
-    let s3_result =
-        tokio::time::timeout(timeout, state.s3_client.list_buckets().send()).await;
+    let s3_result = tokio::time::timeout(timeout, state.s3_client.list_buckets().send()).await;
     let s3_ok = matches!(s3_result, Ok(Ok(_)));
 
     let all_ok = redis_ok && s3_ok;

@@ -118,7 +118,8 @@ pub async fn run_worker(
 
                 // Update metrics (optional / simplified)
                 {
-                    { let mut metrics = lock_metrics(&state.metrics);
+                    {
+                        let mut metrics = lock_metrics(&state.metrics);
                         metrics.active_workers += 1;
                     }
                 }
@@ -127,7 +128,8 @@ pub async fn run_worker(
                 let _ = busy_tx.send(true);
 
                 // Execute Crawl
-                let result = crawler::call_crawler_service(&task, state.domain_throttle.clone()).await;
+                let result =
+                    crawler::call_crawler_service(&task, state.domain_throttle.clone()).await;
 
                 // Job complete — signal idle before saving results so the shutdown
                 // window starts as soon as the crawl finishes, not after S3 writes.
@@ -135,7 +137,8 @@ pub async fn run_worker(
 
                 // Metrics cleanup
                 {
-                    { let mut metrics = lock_metrics(&state.metrics);
+                    {
+                        let mut metrics = lock_metrics(&state.metrics);
                         if metrics.active_workers > 0 {
                             metrics.active_workers -= 1;
                         }
@@ -171,7 +174,11 @@ pub async fn run_worker(
                             let mut item_val = match serde_json::to_value(item) {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    tracing::error!("Failed to serialize worker crawl result for {}: {}", item.url, e);
+                                    tracing::error!(
+                                        "Failed to serialize worker crawl result for {}: {}",
+                                        item.url,
+                                        e
+                                    );
                                     continue;
                                 }
                             };
@@ -215,7 +222,11 @@ pub async fn run_worker(
                         )
                         .await
                         {
-                            tracing::warn!("Failed to save worker summary to S3 bucket {}: {}", bucket_name, e);
+                            tracing::warn!(
+                                "Failed to save worker summary to S3 bucket {}: {}",
+                                bucket_name,
+                                e
+                            );
                         }
 
                         // Local Output (if requested)
@@ -226,7 +237,11 @@ pub async fn run_worker(
                                 let filename = format!("batch_crawl_results_{}.json", timestamp);
                                 let filepath = std::path::Path::new(dir).join(filename);
                                 if let Err(e) = tokio::fs::write(&filepath, &json_content).await {
-                                    tracing::warn!("Failed to write worker results to {:?}: {}", filepath, e);
+                                    tracing::warn!(
+                                        "Failed to write worker results to {:?}: {}",
+                                        filepath,
+                                        e
+                                    );
                                 } else {
                                     tracing::info!("Saved local copy to {}", filepath.display());
                                 }

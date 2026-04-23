@@ -21,8 +21,14 @@ impl AppConfig {
             ($var:expr) => {
                 match std::env::var($var) {
                     Ok(v) if !v.is_empty() => Some(v),
-                    Ok(_) => { errors.push(format!("Env var {} is set but empty", $var)); None }
-                    Err(_) => { errors.push(format!("Missing required env var: {}", $var)); None }
+                    Ok(_) => {
+                        errors.push(format!("Env var {} is set but empty", $var));
+                        None
+                    }
+                    Err(_) => {
+                        errors.push(format!("Missing required env var: {}", $var));
+                        None
+                    }
                 }
             };
         }
@@ -46,7 +52,10 @@ impl AppConfig {
             .collect();
 
         if !errors.is_empty() {
-            return Err(format!("Configuration errors:\n  - {}", errors.join("\n  - ")));
+            return Err(format!(
+                "Configuration errors:\n  - {}",
+                errors.join("\n  - ")
+            ));
         }
 
         if allowed_origins.is_empty() {

@@ -38,7 +38,8 @@ pub async fn ai_exploration(
 
     // Metrics — incremented only after validation passes
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
@@ -68,7 +69,8 @@ pub async fn ai_exploration(
     let mut results = Vec::new();
 
     // Regex for markdown links [text](url)
-    let link_regex = LINK_REGEX.get_or_init(|| regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex"));
+    let link_regex = LINK_REGEX
+        .get_or_init(|| regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex"));
 
     for page_num in 0..limit {
         tracing::info!(
@@ -89,7 +91,8 @@ pub async fn ai_exploration(
             ignore_links: None,
         };
 
-        let crawl_res = crawler::call_crawler_service(&crawl_req, state.domain_throttle.clone()).await;
+        let crawl_res =
+            crawler::call_crawler_service(&crawl_req, state.domain_throttle.clone()).await;
         if let Err(e) = crawl_res {
             tracing::error!("Failed to crawl page {}: {}", current_url, e);
             break;
@@ -155,7 +158,9 @@ pub async fn ai_exploration(
                 ignore_links: None,
             };
 
-            if let Ok(art_resp) = crawler::call_crawler_service(&art_req, state.domain_throttle.clone()).await {
+            if let Ok(art_resp) =
+                crawler::call_crawler_service(&art_req, state.domain_throttle.clone()).await
+            {
                 if !art_resp.results.is_empty() && art_resp.results[0].success {
                     let art_data = &art_resp.results[0];
                     if let Some(md) = &art_data.markdown {
@@ -180,8 +185,14 @@ pub async fn ai_exploration(
                                     page_num + 1,
                                     i + 1
                                 ));
-                                if let Err(e) = tokio::fs::write(&filepath, &content_with_header).await {
-                                    tracing::warn!("Failed to write article to {:?}: {}", filepath, e);
+                                if let Err(e) =
+                                    tokio::fs::write(&filepath, &content_with_header).await
+                                {
+                                    tracing::warn!(
+                                        "Failed to write article to {:?}: {}",
+                                        filepath,
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -210,7 +221,8 @@ pub async fn ai_exploration(
 
     // Metrics cleanup
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }
@@ -243,7 +255,11 @@ pub async fn ai_exploration(
     )
     .await
     {
-        tracing::warn!("Failed to save exploration results to S3 bucket {}: {}", bucket_name, e);
+        tracing::warn!(
+            "Failed to save exploration results to S3 bucket {}: {}",
+            bucket_name,
+            e
+        );
     }
 
     Ok(Json(json!({"data": results})))

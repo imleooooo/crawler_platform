@@ -1,6 +1,6 @@
 use axum::{extract::State, Json};
 use backon::{ExponentialBuilder, Retryable};
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -13,6 +13,8 @@ use crate::state::{lock_metrics, AppState};
 #[derive(Deserialize)]
 pub struct ArxivRequest {
     pub keywords: String,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
     pub year: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: i32,
@@ -22,6 +24,87 @@ pub struct ArxivRequest {
 
 fn default_limit() -> i32 {
     5
+}
+
+#[derive(Clone, Copy)]
+struct ArxivDateRange {
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+}
+
+fn parse_optional_date(
+    value: Option<&String>,
+    field_name: &str,
+) -> Result<Option<NaiveDate>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .map(Some)
+        .map_err(|_| format!("{} must use YYYY-MM-DD format", field_name))
+}
+
+fn arxiv_date_range(request: &ArxivRequest) -> Result<ArxivDateRange, String> {
+    let start = parse_optional_date(request.start_date.as_ref(), "start_date")?;
+    let end = parse_optional_date(request.end_date.as_ref(), "end_date")?;
+
+    if let (Some(start), Some(end)) = (start, end) {
+        if start > end {
+            return Err("start_date must be earlier than or equal to end_date".to_string());
+        }
+    }
+
+    if start.is_some() || end.is_some() {
+        return Ok(ArxivDateRange { start, end });
+    }
+
+    let Some(year) = request
+        .year
+        .as_ref()
+        .map(|y| y.trim())
+        .filter(|y| !y.is_empty())
+    else {
+        return Ok(ArxivDateRange {
+            start: None,
+            end: None,
+        });
+    };
+
+    let parsed_year = year
+        .parse::<i32>()
+        .map_err(|_| "year must use YYYY format".to_string())?;
+    let start = NaiveDate::from_ymd_opt(parsed_year, 1, 1)
+        .ok_or_else(|| "year is out of range".to_string())?;
+    let end = NaiveDate::from_ymd_opt(parsed_year, 12, 31)
+        .ok_or_else(|| "year is out of range".to_string())?;
+
+    Ok(ArxivDateRange {
+        start: Some(start),
+        end: Some(end),
+    })
+}
+
+fn arxiv_submitted_date_query(range: ArxivDateRange) -> Option<String> {
+    if range.start.is_none() && range.end.is_none() {
+        return None;
+    }
+
+    let start = range
+        .start
+        .map(|date| date.format("%Y%m%d").to_string())
+        .unwrap_or_else(|| "00010101".to_string());
+    let end = range
+        .end
+        .map(|date| date.format("%Y%m%d").to_string())
+        .unwrap_or_else(|| "99991231".to_string());
+
+    Some(format!("submittedDate:[{}0000 TO {}2359]", start, end))
 }
 
 #[derive(Serialize)]
@@ -40,9 +123,15 @@ pub async fn arxiv_search(
     State(state): State<AppState>,
     Json(request): Json<ArxivRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let date_range = arxiv_date_range(&request).map_err(|e| {
+        tracing::warn!("Invalid arxiv date range: {}", e);
+        (axum::http::StatusCode::BAD_REQUEST, e)
+    })?;
+
     // Metrics
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
@@ -50,14 +139,9 @@ pub async fn arxiv_search(
 
     // Logic
     let mut query = format!("all:{}", request.keywords);
-    if let Some(year) = &request.year {
-        if !year.trim().is_empty() {
-            query.push_str(&format!(
-                " AND submittedDate:[{}01010000 TO {}12312359]",
-                year.trim(),
-                year.trim()
-            ));
-        }
+    if let Some(date_query) = arxiv_submitted_date_query(date_range) {
+        query.push_str(" AND ");
+        query.push_str(&date_query);
     }
 
     let url = "http://export.arxiv.org/api/query";
@@ -168,7 +252,11 @@ pub async fn arxiv_search(
     };
 
     if let Err(e) = tokio::fs::create_dir_all(&output_path_str).await {
-        tracing::warn!("Failed to create arxiv output directory {}: {}", output_path_str, e);
+        tracing::warn!(
+            "Failed to create arxiv output directory {}: {}",
+            output_path_str,
+            e
+        );
     }
 
     for entry in feed.entries {
@@ -248,7 +336,8 @@ pub async fn arxiv_search(
 
     // Metrics cleanup
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }
@@ -270,6 +359,9 @@ pub async fn arxiv_search(
         "title": title,
         "created_at": created_at,
         "keywords": request.keywords,
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "year": request.year,
         "results": results
     }))
     .unwrap_or_default();
@@ -282,7 +374,11 @@ pub async fn arxiv_search(
     )
     .await
     {
-        tracing::warn!("Failed to save arxiv results to S3 bucket {}: {}", bucket_name, e);
+        tracing::warn!(
+            "Failed to save arxiv results to S3 bucket {}: {}",
+            bucket_name,
+            e
+        );
     }
 
     Ok(Json(json!({"data": results})))

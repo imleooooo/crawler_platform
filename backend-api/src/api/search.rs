@@ -46,7 +46,8 @@ pub async fn search_aggregate(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // 1. Metrics update
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
         }
     }
@@ -56,7 +57,8 @@ pub async fn search_aggregate(
 
     // Metric update cleanup
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }
@@ -114,8 +116,8 @@ async fn search_logic(
         // Give this keyword the full remaining unique-URL quota.
         // Basing this on seen_urls.len() rather than raw hit counts means
         // duplicate-heavy early keywords don't starve later keywords.
-        let per_keyword_limit = (request.num_results - unique_so_far)
-            .min(100 * MAX_DATE_BATCHES as i32);
+        let per_keyword_limit =
+            (request.num_results - unique_so_far).min(100 * MAX_DATE_BATCHES as i32);
 
         let date_batches_needed: usize = if request.time_limit.is_none() {
             ((per_keyword_limit + 99) / 100).max(1) as usize
@@ -171,7 +173,9 @@ async fn search_logic(
                 if start_index > 91 {
                     tracing::info!(
                         "Google CSE pagination limit reached for '{}' (window {}): {} total so far",
-                        keyword, batch_idx, keyword_total
+                        keyword,
+                        batch_idx,
+                        keyword_total
                     );
                     break;
                 }
@@ -271,7 +275,6 @@ async fn search_logic(
                 break 'date_batches;
             }
         } // end date_batches
-
     }
 
     // seen_urls is already deduplicated; convert to Vec for the crawler.
@@ -408,7 +411,11 @@ async fn search_logic(
     )
     .await
     {
-        tracing::warn!("Failed to save search results to S3 bucket {}: {}", bucket_name, e);
+        tracing::warn!(
+            "Failed to save search results to S3 bucket {}: {}",
+            bucket_name,
+            e
+        );
     }
 
     // Optional: Save to local output_dir

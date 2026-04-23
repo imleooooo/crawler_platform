@@ -142,7 +142,14 @@ pub async fn call_crawler_service(
             let req = req.clone();
             let throttle = throttle.clone();
             async move {
-                match fetch_and_parse(&crawl_client, &url, req.ignore_links.unwrap_or(false), &throttle).await {
+                match fetch_and_parse(
+                    &crawl_client,
+                    &url,
+                    req.ignore_links.unwrap_or(false),
+                    &throttle,
+                )
+                .await
+                {
                     Ok((title, published_at, markdown)) => {
                         let final_markdown = if req.run_mode.as_deref() == Some("agent") {
                             if let (Some(prompt), Some(api_key)) = (&req.prompt, &req.api_key) {
@@ -401,8 +408,9 @@ static CRAWLER_WHITESPACE_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
 fn clean_markdown_links(markdown: &str) -> String {
     // 1. Remove reference lines at the bottom.
-    let ref_line_regex = CRAWLER_REF_LINE_REGEX
-        .get_or_init(|| regex::Regex::new(r"(?m)^\[\d+\]:.*(?:\n[^\[\r\n].*)*").expect("valid regex"));
+    let ref_line_regex = CRAWLER_REF_LINE_REGEX.get_or_init(|| {
+        regex::Regex::new(r"(?m)^\[\d+\]:.*(?:\n[^\[\r\n].*)*").expect("valid regex")
+    });
     let cleaned_text = ref_line_regex.replace_all(markdown, "");
 
     // 2. Remove [n] markers from text, e.g. "some text [1]" -> "some text"
@@ -411,8 +419,8 @@ fn clean_markdown_links(markdown: &str) -> String {
     let cleaned_text = marker_regex.replace_all(&cleaned_text, "");
 
     // 3. Remove excess newlines that might be left behind
-    let whitespace_regex = CRAWLER_WHITESPACE_REGEX
-        .get_or_init(|| regex::Regex::new(r"\n{3,}").expect("valid regex"));
+    let whitespace_regex =
+        CRAWLER_WHITESPACE_REGEX.get_or_init(|| regex::Regex::new(r"\n{3,}").expect("valid regex"));
     let final_text = whitespace_regex.replace_all(&cleaned_text, "\n\n");
 
     final_text.trim().to_string()

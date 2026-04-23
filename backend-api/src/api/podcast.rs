@@ -1,6 +1,6 @@
 use axum::{extract::State, Json};
 use backon::{ExponentialBuilder, Retryable};
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -16,6 +16,8 @@ pub struct PodcastRequest {
     pub keywords: String,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
     pub year: Option<String>,
     pub output_dir: Option<String>,
     pub job_id: Option<String>,
@@ -23,6 +25,91 @@ pub struct PodcastRequest {
 
 fn default_limit() -> usize {
     5
+}
+
+#[derive(Clone, Copy)]
+struct PodcastDateRange {
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+}
+
+fn parse_optional_date(
+    value: Option<&String>,
+    field_name: &str,
+) -> Result<Option<NaiveDate>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .map(Some)
+        .map_err(|_| format!("{} must use YYYY-MM-DD format", field_name))
+}
+
+fn podcast_date_range(request: &PodcastRequest) -> Result<PodcastDateRange, String> {
+    let start = parse_optional_date(request.start_date.as_ref(), "start_date")?;
+    let end = parse_optional_date(request.end_date.as_ref(), "end_date")?;
+
+    if let (Some(start), Some(end)) = (start, end) {
+        if start > end {
+            return Err("start_date must be earlier than or equal to end_date".to_string());
+        }
+    }
+
+    if start.is_some() || end.is_some() {
+        return Ok(PodcastDateRange { start, end });
+    }
+
+    let Some(year) = request
+        .year
+        .as_ref()
+        .map(|y| y.trim())
+        .filter(|y| !y.is_empty())
+    else {
+        return Ok(PodcastDateRange {
+            start: None,
+            end: None,
+        });
+    };
+
+    let parsed_year = year
+        .parse::<i32>()
+        .map_err(|_| "year must use YYYY format".to_string())?;
+    let start = NaiveDate::from_ymd_opt(parsed_year, 1, 1)
+        .ok_or_else(|| "year is out of range".to_string())?;
+    let end = NaiveDate::from_ymd_opt(parsed_year, 12, 31)
+        .ok_or_else(|| "year is out of range".to_string())?;
+
+    Ok(PodcastDateRange {
+        start: Some(start),
+        end: Some(end),
+    })
+}
+
+fn podcast_entry_matches_date_range(
+    published: Option<chrono::DateTime<Utc>>,
+    range: PodcastDateRange,
+) -> (bool, String) {
+    let published_str = published.map(|t| {
+        let published_date = t.date_naive();
+        let matches_start = range
+            .start
+            .map(|start| published_date >= start)
+            .unwrap_or(true);
+        let matches_end = range.end.map(|end| published_date <= end).unwrap_or(true);
+        (matches_start && matches_end, t.to_rfc3339())
+    });
+
+    match published_str {
+        Some((matches, published_str)) => (matches, published_str),
+        None if range.start.is_some() || range.end.is_some() => (false, String::new()),
+        None => (true, String::new()),
+    }
 }
 
 #[derive(Serialize)]
@@ -41,18 +128,27 @@ pub async fn podcast_search(
     State(state): State<AppState>,
     Json(request): Json<PodcastRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let date_range = podcast_date_range(&request).map_err(|e| {
+        tracing::warn!("Invalid podcast date range: {}", e);
+        (axum::http::StatusCode::BAD_REQUEST, e)
+    })?;
+
     // Metrics
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             metrics.queue_size += 1;
             metrics.active_workers += 1;
         }
     }
 
     tracing::info!(
-        "Podcast Search Request: keywords='{}', limit={}",
+        "Podcast Search Request: keywords='{}', limit={}, start_date={:?}, end_date={:?}, year={:?}",
         request.keywords,
-        request.limit
+        request.limit,
+        request.start_date,
+        request.end_date,
+        request.year
     );
 
     // metadata_client: bounded timeout for iTunes and feed lookups
@@ -142,7 +238,8 @@ pub async fn podcast_search(
             tracing::warn!("iTunes returned 0 results");
             // Metrics cleanup
             {
-                { let mut metrics = lock_metrics(&state.metrics);
+                {
+                    let mut metrics = lock_metrics(&state.metrics);
                     if metrics.queue_size > 0 {
                         metrics.queue_size -= 1;
                     }
@@ -255,7 +352,11 @@ pub async fn podcast_search(
         .collect();
     let podcast_dir = Path::new(&base_output_path).join(safe_collection_name.trim());
     if let Err(e) = tokio::fs::create_dir_all(&podcast_dir).await {
-        tracing::warn!("Failed to create podcast directory {:?}: {}", podcast_dir, e);
+        tracing::warn!(
+            "Failed to create podcast directory {:?}: {}",
+            podcast_dir,
+            e
+        );
     }
 
     let mut results = Vec::new();
@@ -266,12 +367,10 @@ pub async fn podcast_search(
             break;
         }
 
-        let published_str = entry.published.map(|t| t.to_rfc3339()).unwrap_or_default();
-
-        if let Some(req_year) = &request.year {
-            if !published_str.starts_with(req_year) {
-                continue;
-            }
+        let (matches_date_range, published_str) =
+            podcast_entry_matches_date_range(entry.published, date_range);
+        if !matches_date_range {
+            continue;
         }
 
         // Find Audio URL
@@ -341,7 +440,8 @@ pub async fn podcast_search(
                 tokio::time::timeout(HEADER_TIMEOUT, download_client.get(&audio_url).send()).await;
             let send_result = match send_result {
                 Err(_) => {
-                    result_entry.error = Some("Audio download timed out waiting for headers (30s)".to_string());
+                    result_entry.error =
+                        Some("Audio download timed out waiting for headers (30s)".to_string());
                     results.push(result_entry);
                     downloaded_count += 1;
                     continue;
@@ -464,7 +564,8 @@ pub async fn podcast_search(
 
     // Metrics cleanup
     {
-        { let mut metrics = lock_metrics(&state.metrics);
+        {
+            let mut metrics = lock_metrics(&state.metrics);
             if metrics.queue_size > 0 {
                 metrics.queue_size -= 1;
             }
@@ -484,6 +585,9 @@ pub async fn podcast_search(
         "title": title,
         "created_at": created_at,
         "keywords": request.keywords,
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "year": request.year,
         "results": results
     }))
     .unwrap_or_default();
@@ -496,7 +600,11 @@ pub async fn podcast_search(
     )
     .await
     {
-        tracing::warn!("Failed to save podcast results to S3 bucket {}: {}", bucket_name, e);
+        tracing::warn!(
+            "Failed to save podcast results to S3 bucket {}: {}",
+            bucket_name,
+            e
+        );
     }
 
     Ok(Json(json!({"data": results})))

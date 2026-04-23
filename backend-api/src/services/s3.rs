@@ -22,7 +22,9 @@ const RETRY_CAP_MS: u64 = 8_000;
 /// Spreading retries randomly across the window prevents multiple instances
 /// from thundering-herd back at S3 simultaneously.
 fn retry_delay(attempt: u32) -> Duration {
-    let ceiling = RETRY_BASE_MS.saturating_mul(1u64 << attempt).min(RETRY_CAP_MS);
+    let ceiling = RETRY_BASE_MS
+        .saturating_mul(1u64 << attempt)
+        .min(RETRY_CAP_MS);
     let ms = rand::thread_rng().gen_range(0..=ceiling);
     Duration::from_millis(ms)
 }
@@ -184,7 +186,12 @@ async fn put_body(
 ) -> Result<(), String> {
     tokio::time::timeout(
         timeout,
-        client.put_object().bucket(bucket_name).key(key).body(body).send(),
+        client
+            .put_object()
+            .bucket(bucket_name)
+            .key(key)
+            .body(body)
+            .send(),
     )
     .await
     .map_err(|_| format!("S3 upload timed out after {}s", timeout.as_secs()))?

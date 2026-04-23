@@ -6,8 +6,8 @@ use axum::{
 };
 use dotenvy::dotenv;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -154,7 +154,10 @@ async fn main() {
         .route("/api/search-aggregate", post(api::search::search_aggregate))
         .route("/api/arxiv-search", post(api::arxiv::arxiv_search))
         .route("/api/podcast-search", post(api::podcast::podcast_search))
-        .route("/api/ai-exploration", post(api::exploration::ai_exploration))
+        .route(
+            "/api/ai-exploration",
+            post(api::exploration::ai_exploration),
+        )
         .route("/api/agent-crawl", post(api::crawl::agent_crawl))
         .route("/api/batch-crawl", post(api::crawl::batch_crawl))
         .route("/api/storage-stats", get(api::storage::storage_stats))
@@ -208,10 +211,12 @@ async fn main() {
     };
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
-        eprintln!("FATAL: Failed to bind {}: {}", addr, e);
-        std::process::exit(1);
-    });
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("FATAL: Failed to bind {}: {}", addr, e);
+            std::process::exit(1);
+        });
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_tx, enqueue_gate))
         .await

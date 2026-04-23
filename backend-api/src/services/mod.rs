@@ -78,7 +78,7 @@ fn is_ssrf_ip(ip: std::net::IpAddr) -> bool {
                 || v4.is_private()    // 10/8, 172.16/12, 192.168/16
                 || v4.is_link_local() // 169.254/16
                 || v4.is_unspecified() // 0.0.0.0
-                || v4.is_broadcast()  // 255.255.255.255
+                || v4.is_broadcast() // 255.255.255.255
         }
         std::net::IpAddr::V6(v6) => {
             let s = v6.segments();
