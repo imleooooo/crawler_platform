@@ -119,6 +119,28 @@ struct ArxivResult {
     error: Option<String>,
 }
 
+fn normalize_query_input(keywords: &str) -> String {
+    keywords.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn escape_arxiv_phrase(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn build_arxiv_query(keywords: &str, date_range: ArxivDateRange, title_only: bool) -> String {
+    let normalized_keywords = normalize_query_input(keywords);
+    let escaped_keywords = escape_arxiv_phrase(&normalized_keywords);
+    let search_field = if title_only { "ti" } else { "all" };
+    let mut query = format!(r#"{search_field}:"{escaped_keywords}""#);
+
+    if let Some(date_query) = arxiv_submitted_date_query(date_range) {
+        query.push_str(" AND ");
+        query.push_str(&date_query);
+    }
+
+    query
+}
+
 pub async fn arxiv_search(
     State(state): State<AppState>,
     Json(request): Json<ArxivRequest>,
@@ -137,13 +159,6 @@ pub async fn arxiv_search(
         }
     }
 
-    // Logic
-    let mut query = format!("all:{}", request.keywords);
-    if let Some(date_query) = arxiv_submitted_date_query(date_range) {
-        query.push_str(" AND ");
-        query.push_str(&date_query);
-    }
-
     let url = "http://export.arxiv.org/api/query";
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -151,57 +166,70 @@ pub async fn arxiv_search(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let limit_str = request.limit.to_string();
-    let resp = (|| async {
-        client
-            .get(url)
-            .query(&[
-                ("search_query", query.as_str()),
-                ("start", "0"),
-                ("max_results", limit_str.as_str()),
-                ("sortBy", "submittedDate"),
-                ("sortOrder", "descending"),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("ArXiv API failed: {}", e))
-            .and_then(|r| {
-                if r.status().is_server_error() {
-                    Err(format!("ArXiv server error: {}", r.status()))
-                } else {
-                    Ok(r)
-                }
+    let fetch_feed = |query: String| {
+        let client = client.clone();
+        let limit_str = limit_str.clone();
+        async move {
+            let resp = (|| async {
+                client
+                    .get(url)
+                    .query(&[
+                        ("search_query", query.as_str()),
+                        ("start", "0"),
+                        ("max_results", limit_str.as_str()),
+                        ("sortBy", "submittedDate"),
+                        ("sortOrder", "descending"),
+                    ])
+                    .send()
+                    .await
+                    .map_err(|e| format!("ArXiv API failed: {}", e))
+                    .and_then(|r| {
+                        if r.status().is_server_error() {
+                            Err(format!("ArXiv server error: {}", r.status()))
+                        } else {
+                            Ok(r)
+                        }
+                    })
             })
-    })
-    .retry(
-        ExponentialBuilder::default()
-            .with_min_delay(Duration::from_millis(300))
-            .with_max_delay(Duration::from_secs(5))
-            .with_max_times(3),
-    )
-    .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            .retry(
+                ExponentialBuilder::default()
+                    .with_min_delay(Duration::from_millis(300))
+                    .with_max_delay(Duration::from_secs(5))
+                    .with_max_times(3),
+            )
+            .await?;
 
-    if !resp.status().is_success() {
-        return Err((
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("ArXiv API returned {}", resp.status()),
-        ));
+            if !resp.status().is_success() {
+                return Err(format!("ArXiv API returned {}", resp.status()));
+            }
+
+            let xml_content = resp
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read XML: {}", e))?;
+
+            feed_rs::parser::parse(xml_content.as_ref())
+                .map_err(|e| format!("Failed to parse Atom: {}", e))
+        }
+    };
+
+    let title_query = build_arxiv_query(&request.keywords, date_range, true);
+    let mut feed = fetch_feed(title_query.clone())
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if feed.entries.is_empty() {
+        let fallback_query = build_arxiv_query(&request.keywords, date_range, false);
+        tracing::info!(
+            "ArXiv title query returned no results; falling back to all-fields query: {}",
+            fallback_query
+        );
+        feed = fetch_feed(fallback_query)
+            .await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    } else {
+        tracing::info!("ArXiv title query matched: {}", title_query);
     }
-
-    let xml_content = resp.bytes().await.map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to read XML: {}", e),
-        )
-    })?;
-
-    // Parse using feed-rs
-    let feed = feed_rs::parser::parse(xml_content.as_ref()).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to parse Atom: {}", e),
-        )
-    })?;
 
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
